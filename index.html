@@ -196,6 +196,7 @@ float march(vec3 origin,vec3 ray,float limit,int budget,bool reflection) {
   for(int index=0;index<96;index++) {
     if(index>=budget || distance>=limit) break;
     vec3 p=origin+ray*distance;
+    if(p.y>635. && ray.y>=0.) break;
     float ground=heightAt(p.xz);
     float gap=p.y-ground;
     if(gap<=0. && ground>=0.) {
@@ -283,7 +284,7 @@ void main(){
     if(abs(p.y-shadowCenter.y)<13. && threshold()<coverage) color=p.y<1.?indigo:plum;
   }
   gl_FragDepth=depthFor(distance*dot(forward,ray));
-  if(titleView) {
+  if(titleView && threshold()<.93) {
     if(color==hot) color=cream;
     else if(color==cream) color=gold;
     else if(color==gold) color=peach;
@@ -428,7 +429,7 @@ function setupGraphics() {
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.ALWAYS);
   const landscape=program(screenVertex,landscapeFragment,'field resolution eye right up forward shadowCenter lens time shadowHeight steps loaded reflections titleView');
-  const jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control lens thrust forward flicker visibility');
+  let jet;
   const screenVao=gl.createVertexArray();
   const jetData=jetGeometry(), jetVao=gl.createVertexArray();
   gl.bindVertexArray(jetVao);
@@ -477,13 +478,18 @@ function setupGraphics() {
     gl.uniform1f(u.visibility,visibility);
     gl.drawArrays(gl.TRIANGLES,0,jetData.length/8);
   };
-  return ()=>{
-    for(let z=0;z<cpuSize;z++) for(let x=0;x<cpuSize;x++) {
-      const center=(z*4+1)*fieldSize+x*4+1;
-      cpuTerrain[z*cpuSize+x]=(terrain[center]+terrain[center+1]+terrain[center+fieldSize]+terrain[center+fieldSize+1])*.25;
+  return {
+    upload() {
+      for(let z=0;z<cpuSize;z++) for(let x=0;x<cpuSize;x++) {
+        const center=(z*4+1)*fieldSize+x*4+1;
+        cpuTerrain[z*cpuSize+x]=(terrain[center]+terrain[center+1]+terrain[center+fieldSize]+terrain[center+fieldSize+1])*.25;
+      }
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,fieldSize,fieldSize,0,gl.RED,gl.FLOAT,terrain);
+      terrainReady=true;
+    },
+    compileJet() {
+      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control lens thrust forward flicker visibility');
     }
-    gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,fieldSize,fieldSize,0,gl.RED,gl.FLOAT,terrain);
-    terrainReady=true;
   };
 }
 
@@ -520,6 +526,7 @@ function spawn() {
 function resetFlight() {
   aircraft=spawn(); previous=aircraft; camera=null; impact=0; warning='';
   accumulator=0; particles.length=0; touchThrottle=null;
+  steady=bankTime=energyTime=0;highPoint=-Infinity;lowPoint=Infinity;dipped=false;
 }
 function spray(position,velocity,water) {
   for(let i=0;i<29;i++) {
@@ -626,7 +633,7 @@ function flightCamera(s,dt) {
   const flightDirection=unit(s.velocity);
   const target=unit(blend(nose,flightDirection,mix(.025,.28,viewBlend)));
   const chaseDistance=mix(17,29,speedFactor)-Math.max(0,s.g-1.65)*1.2;
-  const eyeOffset=add(mul(up,mix(.94,mix(4.5,7.2,speedFactor),viewBlend)),mul(nose,mix(.54,-chaseDistance,viewBlend)));
+  const eyeOffset=add(mul(up,mix(.94,mix(6.5,9.2,speedFactor),viewBlend)),mul(nose,mix(.54,-chaseDistance,viewBlend)));
   const anchor=s.position;
   if(!camera) camera={anchor,velocity:[0,0,0],direction:target,tilt:0};
   [camera.anchor,camera.velocity]=spring(camera.anchor,camera.velocity,anchor,mix(25,10,viewBlend),dt);
@@ -641,7 +648,7 @@ function flightCamera(s,dt) {
   eye[1]=Math.max(ground+pad,eye[1]+push*1.1*viewBlend);
   camera.tilt=approach(camera.tilt,push,6,dt);
   camera.direction=unit(blend(camera.direction,target,1-Math.exp(-mix(21,10,viewBlend)*dt)));
-  const aim=add(camera.direction,mul(up,-viewBlend*(.107+camera.tilt*.14)));
+  const aim=add(camera.direction,mul(up,-viewBlend*(.178+camera.tilt*.14)));
   const bump=(impact*.029+Math.max(0,s.g-2.5)*.0025)*Math.sin(simulationTime*71);
   return makeCamera(eye,add(aim,mul(right,bump)),s.bank*mix(.76,.44,viewBlend)+camera.tilt*.055,
     mix(.588,.686,speedFactor)*mix(1,1.08,viewBlend)-Math.max(0,s.g-2)*.012);
@@ -765,7 +772,7 @@ function titleScreen(time) {
   rect(0,0,width,5,pattern(colors.ink,7));
   rect(0,height-25,width,25,pattern(colors.ink,14));
   const center=width/2, middle=Math.round(height/2);
-  const scale=width<325?4:height<290?5:6;
+  const scale=width<190?3:width<325?4:height<290?5:6;
   const emblemY=middle-100;
   polygon([[center,emblemY-8],[center+11,emblemY+6],[center+3,emblemY+4],[center,emblemY+9],
     [center-3,emblemY+4],[center-11,emblemY+6]],colors.gold);
@@ -823,14 +830,14 @@ function drawCanopy(visibility) {
   canopyCtx.clearRect(0,0,width,height);
   // Draw the solid geometry on the overlay, then transfer it through a binary wipe.
   ctx.save();
-  const cx=width/2, bottom=height;
+  const cx=width/2, bottom=height, dashRise=touch?39:0, noseBase=bottom-dashRise;
   if(width<330) {
-    polygon([[cx-25,bottom-64],[cx,bottom-94],[cx+25,bottom-64]],colors.slate);
-    line(cx,bottom-94,cx+16,bottom-65,colors.haze);
+    polygon([[cx-25,noseBase-58],[cx,noseBase-94],[cx+25,noseBase-58]],colors.slate);
+    line(cx,noseBase-94,cx+16,noseBase-65,colors.haze);
   } else {
-    polygon([[cx-40,bottom-62],[cx-7,bottom-92],[cx+4,bottom-95],[cx+42,bottom-62]],colors.slate);
-    polygon([[cx-36,bottom-62],[cx-5,bottom-86],[cx+6,bottom-86],[cx+31,bottom-62]],colors.violet);
-    line(cx-7,bottom-91,cx+7,bottom-91,colors.peach);
+    polygon([[cx-40,noseBase-61],[cx-7,noseBase-92],[cx+4,noseBase-95],[cx+42,noseBase-61]],colors.slate);
+    polygon([[cx-36,noseBase-61],[cx-5,noseBase-86],[cx+6,noseBase-86],[cx+31,noseBase-61]],colors.violet);
+    line(cx-7,noseBase-91,cx+7,noseBase-91,colors.peach);
   }
   for(const side of [-1,1]) {
     const x=distance=>side<0?distance:width-distance;
@@ -844,11 +851,12 @@ function drawCanopy(visibility) {
     polygon([[x(0),0],[x(54),0],[x(0),56]],pattern(colors.ink,4));
   }
   const lip=[[0,bottom-74],[width*.11,bottom-69],[width*.27,bottom-45],[width*.39,bottom-62],
-    [width*.61,bottom-62],[width*.73,bottom-45],[width*.89,bottom-69],[width,bottom-74]];
+    [width*.61,bottom-62],[width*.73,bottom-45],[width*.89,bottom-69],[width,bottom-74]]
+    .map(([x,y])=>[x,y-dashRise]);
   polygon([...lip,[width,bottom],[0,bottom]],colors.ink);
   polygon([...lip,...lip.map(([x,y])=>[x,y+8]).reverse()],colors.black);
   for(let i=1;i<lip.length;i++) line(...lip[i-1],...lip[i],colors.haze);
-  line(cx-width*.10,bottom-60,cx+width*.10,bottom-60,colors.gold);
+  line(cx-width*.10,bottom-60-dashRise,cx+width*.10,bottom-60-dashRise,colors.gold);
   for(let i=0;i<19;i++) {
     const x=Math.round(i*width/19+6), y=bottom-7-(i*17%18);
     rect(x,y,1,1,i%3?colors.violet:colors.copper);
@@ -892,14 +900,14 @@ function tape(x,y,side,value,span,increment,label) {
 function flightHud(s,cam,time) {
   const blendAmount=viewBlend, mid=width/2, centerY=height/2;
   const [insetTop,insetRight,insetBottom,insetLeft]=screenInsets;
-  const [right,up,nose]=basisOf(s.attitude);
+  const nose=rotate(s.attitude,[0,0,1]);
   const heading=wrap(Math.atan2(nose[0],nose[2])/rad,360);
   const speed=s.speed*3.6;
   const compact=width<350;
   const tapeMargin=compact?53:80;
   const leftX=Math.round(mix(compact?61:width*.25,tapeMargin+insetLeft,blendAmount));
   const rightX=Math.round(mix(compact?width-61:width*.75,width-tapeMargin-insetRight,blendAmount));
-  const tapeY=Math.round(mix(height-34,centerY-4,blendAmount));
+  const tapeY=Math.round(mix(height-(touch?96:34),centerY-4,blendAmount));
   const span=Math.round(mix(13,32,blendAmount));
   tape(leftX,tapeY,-1,speed,span,10,'时速');
   tape(rightX,tapeY,1,s.position[1],span,10,'高度');
@@ -947,12 +955,12 @@ function flightHud(s,cam,time) {
     }
   }
   const barW=compact?36:47, barX=Math.round(mix(mid-barW/2,16+insetLeft,blendAmount));
-  const barY=Math.round(mix(height-23,height-(touch?126:32)-insetBottom,blendAmount));
+  const barY=Math.round(mix(height-23,height-(touch?136:32)-insetBottom,blendAmount));
   border(barX,barY,barW,6,dim);
   rect(barX+2,barY+2,Math.floor((barW-4)*s.thrust),2,s.thrust>.86?colors.red:hud);
   type('油门 '+Math.round(s.throttle*100)+'%',barX,barY-4,7,dim);
   const gX=Math.round(mix(mid,width-17-insetRight,blendAmount));
-  type('载荷 '+s.g.toFixed(1)+' 倍',gX,barY+15,8,dim,'mono',blendAmount>.45?'right':'center');
+  type('载荷 '+s.g.toFixed(1)+' 倍',gX,barY+(touch&&blendAmount>.45?4:15),8,dim,'mono',blendAmount>.45?'right':'center');
   if(warning && Math.floor(time*8)%2===0) {
     rect(mid-30,centerY-57,60,19,pattern(colors.ink,13));
     corners(mid-30,centerY-57,59,18,4,colors.red);
@@ -1002,20 +1010,29 @@ function updateTutorial(dt) {
   if(lesson===5 && (freeTime+=dt)>=4.6) lesson++;
 }
 function tutorialHud(s) {
-  const x=screenInsets[3]+12, y=height-screenInsets[2]-(touch?120:112), active=!tutorialSkipped&&lesson<lessons.length;
+  const x=screenInsets[3]+12, y=height-screenInsets[2]-(touch?Math.round(mix(151,120,viewBlend)):112);
+  const active=!tutorialSkipped&&lesson<lessons.length;
   if(active) {
     const [,title,keysHint,touchHint]=lessons[lesson];
     const message=touch&&touchHint?touchHint:keysHint;
-    const textSize=width<290?9:10;
+    const textSize=width<180?8:width<290?9:10;
     glyphContext.font='500 '+textSize+'px '+monoFont;
-    const w=Math.min(width-24,Math.max(145,Math.ceil(glyphContext.measureText(message).width)+16));
+    const maxWidth=width-screenInsets[3]-screenInsets[1]-24;
+    const rows=[''];
+    for(const character of message) {
+      const index=rows.length-1;
+      if(rows[index] && glyphContext.measureText(rows[index]+character).width>maxWidth-16) rows.push(character);
+      else rows[index]+=character;
+    }
+    const w=Math.min(maxWidth,Math.max(136,Math.ceil(Math.max(...rows.map(row=>glyphContext.measureText(row).width)))+16));
+    const extra=(rows.length-1)*11;
     const shade=lesson===5&&freeTime>4?Math.ceil((4.6-freeTime)*5):4;
-    rect(x,y,w,34,pattern(colors.ink,shade*4-1));
-    corners(x,y,w-1,33,7,shade>1?dim:colors.mauve);
+    rect(x,y-extra,w,34+extra,pattern(colors.ink,shade*4-1));
+    corners(x,y-extra,w-1,33+extra,7,shade>1?dim:colors.mauve);
     if(shade>1) {
-      rect(x+7,y+6,2,8,colors.gold);
-      type(title,x+14,y+14,10,hud,'display');
-      type(message,x+8,y+27,textSize,dim);
+      rect(x+7,y-extra+6,2,8,colors.gold);
+      type(title,x+14,y-extra+14,10,hud,'display');
+      rows.forEach((row,index)=>type(row,x+8,y-extra+27+index*11,textSize,dim));
     }
   } else {
     const sign=v=>v>=0?'＋':'−';
@@ -1118,9 +1135,11 @@ function launch() {
 }
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
+const actionKeys=new Set(['Enter','Escape','KeyC','KeyR','KeyP']);
 addEventListener('keydown',event=>{
-  if((event.metaKey || event.ctrlKey&&!event.code.startsWith('Control')&&!flightKeys.has(event.code)))return;
-  if(flightKeys.has(event.code)||['Enter','Escape','KeyC','KeyR','KeyP'].includes(event.code)) event.preventDefault();
+  if(event.metaKey || !flightKeys.has(event.code)&&!actionKeys.has(event.code)) return;
+  if(event.ctrlKey&&!flying&&!event.code.startsWith('Control')) return;
+  event.preventDefault();
   keys.add(event.code);
   if(event.repeat) return;
   if(event.code==='Enter') launch();
@@ -1189,7 +1208,7 @@ function resize() {
   height=resolutionLevels[quality];
   // Preserve readable controls in portrait while keeping square pixels.
   const aspect=innerWidth/innerHeight;
-  if(aspect<.70) height=Math.max(height,Math.ceil(193/aspect));
+  if(aspect<.70) height=Math.max(height,Math.ceil([193,179,169,160][quality]/aspect));
   width=Math.round(height*aspect);
   world.width=glass.width=canopy.width=width;
   world.height=glass.height=canopy.height=height;
@@ -1205,6 +1224,7 @@ function draw(now) {
   requestAnimationFrame(draw);
   const elapsed=clamp((now-last)/1000,0,.1), realTime=(now-origin)/1000;
   last=now;
+  if(document.hidden) return;
   if(ready && !document.hidden) {
     average=mix(average,elapsed*1000,.045);
     pressure=average>20?pressure+elapsed:0;
@@ -1263,10 +1283,12 @@ async function boot() {
   building.catch(()=>{});
   try {
     await paintFrame();
-    const upload=setupGraphics();
+    const graphics=setupGraphics();
     await building;
     progress=.81;loading='正在编译着色器…';
-    upload();
+    graphics.upload();
+    await paintFrame();
+    graphics.compileJet();
     await paintFrame();
     progress=.94;loading='正在预热驾驶舱…';
     const warm=spawn();
