@@ -62,6 +62,8 @@
 
 合作模式共享任务进度和积分，队友掉线时可由电脑僚机接替。对抗模式是南岸空域的 1 对 1。联机菜单只在本机打开，联机对局也不会覆盖单机存档。
 
+**同一个热点还是连不上？** 确认房主已经粘贴本次回执。若仍提示直连失败，试用允许设备互通的家庭 Wi‑Fi。有可用的 TURN 服务时，两端可在 **中继设置** 填入各自的服务器凭据，启用后重新交换邀请和回执。中继需要能访问该服务器，游戏没有内置中继服务。
+
 <p align="center">
   <img src="docs/media/lan-room.png" alt="PATROL 局域网房间，显示合作任务、一对一对抗、机库选机与准备按钮" width="720">
 </p>
@@ -81,3 +83,5 @@ Play either of two co-op sorties or fly a 150-second one-on-one duel over the so
 3. The host pastes the reply and chooses a mode and map. Both players pick a plane and mark themselves ready, then the host starts the sortie.
 
 In co-op, both players share mission progress and score. An AI wingman can take over if the other player disconnects. LAN matches leave solo saves intact.
+
+If a shared hotspot blocks direct connections, try a network that allows device-to-device traffic. If you have access to a TURN service, both players can configure it under **中继设置** (Relay Settings) before exchanging new invitation and reply texts. The game does not include a hosted relay.

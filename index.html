@@ -3140,7 +3140,7 @@ const lan={
   localReady:false, remoteReady:false, revision:0, round:0, status:'',
   session:'', invite:'', response:'', peer:null, control:null, snapshots:null, dialog:null,
   helloSent:false, helloReceived:false, timer:0, disconnectTimer:0, epoch:0,
-  onStart:null, onControl:null, onSnapshot:null, onDisconnect:null, onExit:null, onRematch:null,
+  relay:null, onStart:null, onControl:null, onSnapshot:null, onDisconnect:null, onExit:null, onRematch:null,
   send:(message,fast=false)=>fast?lanSendSnapshot(message):lanSendControl(message)
 };
 const lanModelValid=index=>Number.isInteger(index)&&Boolean(aircraftModels[index])&&!aircraftModels[index].role;
@@ -3163,7 +3163,7 @@ function closeLanRoom() {
   lan.dialog=null;
   dialog?.close();
   Object.assign(lan,{role:null,phase:'idle',mode:'pve',stage:lanStages.pve[0],localReady:false,remoteReady:false,
-    revision:0,round:0,status:'',session:'',invite:'',response:''});
+    revision:0,round:0,status:'',session:'',invite:'',response:'',relay:null});
 }
 function openLanRoom(aircraftIndex=0) {
   closeLanRoom();
@@ -3181,6 +3181,13 @@ function failLanPeer(status) {
 function encodeLanCode(kind,description) {
   return lanCodePrefix+btoa(JSON.stringify({kind,session:lan.session,protocol:lanProtocol,sdp:description.sdp}));
 }
+function lanRelaySettings(url,username,credential) {
+  const urls=url.trim();
+  const address=/^turns?:(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::(\d{1,5}))?(?:\?transport=(?:udp|tcp))?$/i.exec(urls);
+  if(!address || address[1] && (Number(address[1])===0||Number(address[1])>65535) || !username.trim() || !credential)
+    throw new Error('请填写有效的中继地址、用户名和密码');
+  return {urls,username:username.trim(),credential};
+}
 function decodeLanCode(value,kind) {
   const prefix=value.trim().replace(/\s/g,'');
   if(/^PATROL\d+\./.test(prefix)&&!prefix.startsWith(lanCodePrefix)) throw new Error('游戏版本不一致');
@@ -3192,7 +3199,8 @@ function decodeLanCode(value,kind) {
   if(data.kind!==kind) throw new Error(kind==='offer'?'请粘贴房主的邀请':'请粘贴客机的回执');
   if(typeof data.session!=='string'||!/^[0-9a-f]{32}$/.test(data.session)||
     typeof data.sdp!=='string'||!data.sdp.startsWith('v=0')||data.sdp.length>28000) throw new Error('连接码格式错误');
-  if(!/(?:^|\r?\n)a=candidate:[^\r\n]* typ host(?:\s|$)/.test(data.sdp)) throw new Error('连接码缺少本地网络地址');
+  if(!/(?:^|\r?\n)a=candidate:[^\r\n]* typ (?:host|srflx|relay)(?:\s|$)/.test(data.sdp))
+    throw new Error('连接码没有可用网络地址');
   return data;
 }
 function gatherLanDescription(peer,epoch) {
@@ -3202,6 +3210,9 @@ function gatherLanDescription(peer,epoch) {
       if(peer.iceGatheringState!=='complete'&&peer.signalingState!=='closed') return;
       cleanup();
       if(epoch!==lan.epoch||!peer.localDescription) {reject(new Error('连接已取消'));return;}
+      if(lan.relay && !/^a=candidate:[^\r\n]* typ relay(?:\s|$)/m.test(peer.localDescription.sdp)) {
+        reject(new Error('中继不可用，请检查地址和凭据'));return;
+      }
       resolve(peer.localDescription);
     };
     const cleanup=()=>{
@@ -3209,7 +3220,7 @@ function gatherLanDescription(peer,epoch) {
       peer.removeEventListener('icegatheringstatechange',done);
       peer.removeEventListener('signalingstatechange',done);
     };
-    timeout=setTimeout(()=>{cleanup();reject(new Error('收集局域网地址超时'));},12000);
+    timeout=setTimeout(()=>{cleanup();reject(new Error(lan.relay?'收集中继地址超时':'收集局域网地址超时'));},12000);
     peer.addEventListener('icegatheringstatechange',done);
     peer.addEventListener('signalingstatechange',done);
     done();
@@ -3233,8 +3244,13 @@ function lanSendSnapshot(message) {
 function setLanConnectionTimer(epoch,ms) {
   clearTimeout(lan.timer);
   lan.timer=setTimeout(()=>{
-    if(epoch===lan.epoch&&!lan.connected) failLanPeer('连接超时，请确认两台设备在同一局域网');
+    if(epoch===lan.epoch&&!lan.connected) failLanPeer(lanConnectionFailure(lan.peer));
   },ms);
+}
+function lanConnectionFailure(peer) {
+  if(['connected','completed'].includes(peer?.iceConnectionState)) return '网络已连通，但游戏握手未完成，请重新建房';
+  if(lan.phase==='answer') return '请确认房主已粘贴回执。仍失败可换网络或用中继';
+  return lan.relay?'中继连接失败，请检查两端中继设置':'直连失败，热点可能隔离设备，请换网络或使用中继';
 }
 function finishLanHandshake() {
   if(lan.control?.readyState!=='open'||lan.snapshots?.readyState!=='open') return;
@@ -3256,7 +3272,7 @@ function attachLanChannel(channel,epoch) {
   lan[key]=channel;
   channel.addEventListener('open',()=>{if(epoch===lan.epoch) finishLanHandshake();});
   channel.addEventListener('close',()=>{
-    if(epoch===lan.epoch) failLanPeer(lan.connected?'对方已离开，连接结束':'连接未建立，请重新交换连接码');
+    if(epoch===lan.epoch) failLanPeer(lan.connected?'对方已离开，连接结束':lanConnectionFailure(lan.peer));
   });
   channel.addEventListener('message',event=>{
     if(epoch!==lan.epoch||typeof event.data!=='string'||event.data.length>60000) return;
@@ -3274,12 +3290,13 @@ function attachLanChannel(channel,epoch) {
 function createLanPeer(role,session) {
   releaseLanPeer();
   if(typeof RTCPeerConnection!=='function') throw new Error('此浏览器未提供局域网连接功能');
-  const peer=new RTCPeerConnection({iceServers:[]}), epoch=lan.epoch;
+  const settings=lan.relay?{iceServers:[lan.relay],iceTransportPolicy:'relay'}:{iceServers:[]};
+  const peer=new RTCPeerConnection(settings), epoch=lan.epoch;
   Object.assign(lan,{peer,role,session,localReady:false,remoteReady:false,revision:0,round:0,status:'',invite:'',response:''});
   peer.addEventListener('connectionstatechange',()=>{
     if(epoch!==lan.epoch) return;
     clearTimeout(lan.disconnectTimer);
-    if(peer.connectionState==='failed') failLanPeer('局域网直连失败，请重新创建或加入');
+    if(peer.connectionState==='failed') failLanPeer(lanConnectionFailure(peer));
     else if(peer.connectionState==='disconnected') lan.disconnectTimer=setTimeout(()=>{
       if(epoch===lan.epoch&&peer.connectionState==='disconnected') failLanPeer('已断开局域网连接');
     },4000);
@@ -3288,8 +3305,13 @@ function createLanPeer(role,session) {
     attachLanChannel(peer.createDataChannel('patrol-control'),epoch);
     attachLanChannel(peer.createDataChannel('patrol-snapshot',{ordered:false,maxRetransmits:0}),epoch);
   } else peer.addEventListener('datachannel',event=>{
-    if(epoch===lan.epoch) attachLanChannel(event.channel,epoch);
-    else event.channel.close();
+    if(epoch!==lan.epoch) {event.channel.close();return;}
+    // ICE may connect before the host pastes the answer. An incoming game channel proves it has started.
+    if(!lan.connected && lan.phase==='answer') {
+      lan.phase='connecting';
+      setLanConnectionTimer(epoch,35000);
+    }
+    attachLanChannel(event.channel,epoch);
   });
   return {peer,epoch};
 }
@@ -3309,7 +3331,7 @@ async function createLanInvitation() {
     Object.assign(lan,{invite,phase:'invite'});
   } catch(error) {
     if(epoch===undefined||epoch===lan.epoch)
-      failLanPeer(error instanceof Error&&error.message.includes('局域网')?error.message:'无法生成邀请，请检查浏览器网络权限');
+      failLanPeer(error instanceof Error&&/局域网|中继/.test(error.message)?error.message:'无法生成邀请，请检查浏览器网络权限');
   }
 }
 async function acceptLanInvitation(value) {
@@ -3324,10 +3346,11 @@ async function acceptLanInvitation(value) {
     if(epoch!==lan.epoch) return;
     const response=encodeLanCode('answer',description);
     decodeLanCode(response,'answer');
-    Object.assign(lan,{response,phase:'connecting'});
-    setLanConnectionTimer(epoch,90000);
-  } catch {
-    if(epoch===lan.epoch) failLanPeer('无法生成回执，请检查邀请和浏览器网络权限');
+    if(lan.connected) return;
+    Object.assign(lan,{response,phase:'answer'});
+  } catch(error) {
+    if(epoch===lan.epoch) failLanPeer(error instanceof Error&&error.message.includes('中继')?error.message:
+      '无法生成回执，请检查邀请和浏览器网络权限');
   }
 }
 async function acceptLanResponse(value) {
@@ -3338,7 +3361,7 @@ async function acceptLanResponse(value) {
   catch {throw new Error('无法读取回执，请完整复制后重试');}
   if(epoch===lan.epoch&&!lan.connected) {
     lan.phase='connecting';
-    setLanConnectionTimer(epoch,18000);
+    setLanConnectionTimer(epoch,35000);
   }
 }
 function sendLanSetup() {
@@ -3478,7 +3501,7 @@ function showLanCode(kind) {
       else await acceptLanResponse(textArea.value);
       if(!dialog.open) return;
       dialog.close();
-      if(kind==='join'&&lan.phase==='connecting'&&lan.response) showLanCode('response');
+      if(kind==='join'&&['answer','connecting'].includes(lan.phase)&&lan.response) showLanCode('response');
     } catch(error) {message.textContent=error.message;}
     finally {primary.disabled=false;}
   });
@@ -3487,13 +3510,52 @@ function showLanCode(kind) {
   textArea.focus();
   if(output) textArea.select();
 }
+function showLanRelaySettings() {
+  const dialog=document.createElement('dialog'), form=document.createElement('form');
+  const note=document.createElement('p'), status=document.createElement('p');
+  note.textContent='热点无法直连时，两端可填写自己的 TURN 中继。凭据仅在本次联机页面使用。';
+  Object.assign(dialog.style,{width:'min(390px, 92vw)',background:colors.ink,color:colors.cream,
+    border:'2px solid '+colors.haze,padding:'16px',font:'14px '+chineseFont});
+  const fields=[['中继地址','text',lan.relay?.urls,'turns:relay.example:443?transport=tcp'],
+    ['用户名','text',lan.relay?.username,''],['密码','password',lan.relay?.credential,'']];
+  form.append(note);
+  const inputs=fields.map(([text,type,value,placeholder])=>{
+    const label=document.createElement('label'), input=document.createElement('input');
+    input.type=type;input.value=value||'';input.placeholder=placeholder;
+    input.autocomplete='off';input.spellcheck=false;
+    Object.assign(input.style,{display:'block',width:'100%',margin:'4px 0 12px',padding:'6px',
+      background:colors.black,color:colors.cream,border:'1px solid '+colors.haze});
+    label.append(text,input);form.append(label);
+    return input;
+  });
+  status.setAttribute('role','status');
+  form.append(status);
+  for(const [text,action] of [['取消',()=>dialog.close()],['使用直连',()=>{
+    lan.relay=null;lan.status='';dialog.close();
+  }],['启用中继',()=>form.requestSubmit()]]) {
+    const button=document.createElement('button');
+    button.type='button';button.textContent=text;
+    Object.assign(button.style,{marginRight:'8px',padding:'5px 9px',background:colors.gold,color:colors.ink});
+    button.addEventListener('click',action);form.append(button);
+  }
+  form.addEventListener('submit',event=>{
+    event.preventDefault();
+    try {lan.relay=lanRelaySettings(...inputs.map(input=>input.value));lan.status='';dialog.close();}
+    catch(error) {status.textContent=error.message;}
+  });
+  lan.dialog?.close();lan.dialog=dialog;
+  dialog.addEventListener('keydown',event=>event.stopPropagation());
+  dialog.addEventListener('close',()=>{if(lan.dialog===dialog) lan.dialog=null;dialog.remove();});
+  dialog.append(form);document.body.append(dialog);dialog.showModal();
+}
 function drawLanRoom() {
   const center=width/2, panelWidth=Math.min(316,width-24), x=Math.round(center-panelWidth/2);
   const top=Math.max(12,Math.round(height/2-139)), buttonX=x+13, innerWidth=panelWidth-26;
   const half=Math.floor((innerWidth-6)/2), second=buttonX+half+6, thin=panelWidth<246;
   const status=lan.status||{
     idle:'两台设备使用同一版本并连接同一局域网',gathering:'正在收集局域网地址…',
-    invite:'将邀请发给客机，再填入客机回执',connecting:lan.role==='guest'?'将你的回执发回房主':'正在建立直连…'
+    invite:'将邀请发给客机，再填入客机回执',answer:'将你的回执发回房主，等待对方粘贴',
+    connecting:lan.relay?'正在通过中继连接…':'正在建立直连…'
   }[lan.phase]||'';
   rect(x,top,panelWidth,242,colors.ink);
   rect(x+1,top+1,panelWidth-2,240,pattern(colors.plum,7));
@@ -3526,10 +3588,11 @@ function drawLanRoom() {
       canvasButton('lanCreate','创建房间',buttonX,top+88,half,27,true,11);
       canvasButton('lanJoin','加入房间',second,top+88,half,27,false,11);
       type('房主发送邀请 · 客机发送回执',center,top+136,thin?8:10,colors.gold,'mono','center');
+      canvasButton('lanRelay',lan.relay?'中继已启用 · 设置':'中继设置',buttonX,top+151,innerWidth,22,false,10);
     } else if(lan.phase==='invite') {
       canvasButton('lanInvite','查看邀请',buttonX,top+88,half,27,false,11);
       canvasButton('lanConfirm','粘贴回执',second,top+88,half,27,true,11);
-    } else if(lan.phase==='connecting'&&lan.response) {
+    } else if(['answer','connecting'].includes(lan.phase)&&lan.response) {
       canvasButton('lanResponse','查看回执',buttonX,top+88,innerWidth,27,true,11);
     }
   }
@@ -3563,6 +3626,7 @@ function handleLanRoomPointer(point) {
   else if(hit('lanInvite')) showLanCode('invite');
   else if(hit('lanConfirm')) showLanCode('confirm');
   else if(hit('lanResponse')) showLanCode('response');
+  else if(hit('lanRelay')) showLanRelaySettings();
   else if(hit('lanPve')) setLanMode('pve');
   else if(hit('lanPvp')) setLanMode('pvp');
   else if(hit('lanMap')) {
