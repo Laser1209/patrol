@@ -21,7 +21,8 @@ const colors = {
   ink:'#20182d', black:'#302039', plum:'#49304e', violet:'#654263',
   mauve:'#966079', haze:'#bc7e88', peach:'#edaa93', copper:'#b76b56',
   ochre:'#dd975b', gold:'#f8c685', cream:'#fff0c7', hot:'#fffbe6',
-  slate:'#504b69', indigo:'#373857', red:'#ff927a', olive:'#777859'
+  slate:'#504b69', indigo:'#373857', red:'#ff927a', olive:'#777859',
+  blue:'#50758c', mist:'#95aab3', overcast:'#768b98', frost:'#c8ced0', night:'#25263e'
 };
 const bayer = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 const world = document.querySelector('#world');
@@ -112,11 +113,13 @@ function heightAt(x,z) {
   const at = (xIndex,zIndex) => cpuTerrain[wrap(zIndex,cpuSize)*cpuSize+wrap(xIndex,cpuSize)];
   const a = mix(at(i,j),at(i+1,j),column-i);
   const b = mix(at(i,j+1),at(i+1,j+1),column-i);
-  return mix(a,b,row-j);
+  const {relief,waterline}=flightEnvironment();
+  return mix(a,b,row-j)*relief-waterline;
 }
-function solidHeight(x,z) {
+function solidHeight(x,z,environment=flightEnvironment()) {
   const scale = fieldSize/tile;
-  return terrain[wrap(Math.floor(z*scale),fieldSize)*fieldSize+wrap(Math.floor(x*scale),fieldSize)];
+  return terrain[wrap(Math.floor(z*scale),fieldSize)*fieldSize+wrap(Math.floor(x*scale),fieldSize)]*
+    environment.relief-environment.waterline;
 }
 
 // WebGL setup and shared ordered-color shader functions.
@@ -126,7 +129,7 @@ const shaderCommon = `#version 300 es
 precision highp float;
 precision highp int;
 ${shaderColors}
-const vec3 sun=vec3(-0.416,0.115,0.902);
+uniform vec3 sun;
 const float farClip=3900.;
 float threshold() {
   const int matrix[16]=int[16](0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
@@ -160,35 +163,43 @@ out vec4 pixel;
 uniform sampler2D field;
 uniform vec2 resolution;
 uniform vec3 eye, right, up, forward, shadowCenter;
-uniform float lens, time, shadowHeight;
+uniform float lens, time, shadowHeight, cloudHeight;
+uniform vec2 landShape, cloudWind;
+uniform vec4 weather;
 uniform int steps;
 uniform bool loaded, reflections, titleView;
-float heightAt(vec2 p) {return texture(field,fract(p/4096.)).r;}
+float heightAt(vec2 p) {return texture(field,fract(p/4096.)).r*landShape.x-landShape.y;}
 float relief(vec2 p) {return max(0.,heightAt(p));}
 vec3 hazeColor(vec3 ray) {
   float sunward=clamp(dot(normalize(vec2(ray.x,ray.z)+vec2(.0001)),normalize(sun.xz))*.5+.5,0.,1.);
+  if(weather.w>2.5) return ramp(night,indigo,violet,mauve,sunward*.72);
+  if(weather.w>1.5) return ramp(indigo,slate,overcast,mist,sunward*.75);
+  if(weather.w>.5) return ramp(blue,overcast,mist,frost,sunward*.86);
   return ramp(mauve,haze,peach,gold,sunward*.89);
 }
 vec3 sky(vec3 ray,vec3 origin) {
   float heading=max(0.,dot(ray,sun));
   float rise=max(0.,ray.y);
-  vec3 color=ramp(hazeColor(ray),haze,mauve,violet,pow(rise,.53)*1.52);
+  vec3 color=weather.w>2.5?ramp(hazeColor(ray),indigo,night,ink,pow(rise,.53)*1.52):
+    weather.w>.5?ramp(hazeColor(ray),overcast,blue,slate,pow(rise,.53)*1.52):
+    ramp(hazeColor(ray),haze,mauve,violet,pow(rise,.53)*1.52);
   float ring=1.-heading;
-  if(ring<.041) color=pairColor(color,peach,clamp((.041-ring)*19.,0.,.85));
-  if(ring<.012) color=pairColor(color,gold,clamp((.012-ring)*76.,0.,.93));
+  if(ring<.041) color=pairColor(color,weather.w>.5?mist:peach,clamp((.041-ring)*19.*weather.z,0.,.85));
+  if(ring<.012) color=pairColor(color,weather.w>.5?frost:gold,clamp((.012-ring)*76.*weather.z,0.,.93));
   if(ray.y>.018) {
-    vec2 cloud=(origin.xz+ray.xz*((410.-min(380.,origin.y))/ray.y))*vec2(.00173,.00310);
-    cloud+=vec2(time*.009,-time*.004);
+    vec2 cloud=(origin.xz+ray.xz*((cloudHeight-min(cloudHeight-30.,origin.y))/ray.y))*vec2(.00173,.00310);
+    cloud+=time*cloudWind;
     float layer=noise(cloud)*.62+noise(cloud*2.08)*.25+noise(cloud*4.11)*.13;
-    float edge=.59+threshold()*.018;
+    float edge=weather.x+threshold()*.018;
     if(layer>edge && ray.y>.03) {
       float lit=clamp((layer-.57)*2.2+heading*.50+noise(cloud+vec2(.1,-.14))*.15,0.,1.);
-      color=ramp(violet,haze,peach,gold,lit);
+      color=weather.w>2.5?ramp(night,indigo,slate,mauve,lit*.74):
+        weather.w>.5?ramp(slate,overcast,mist,frost,lit*weather.z):ramp(violet,haze,peach,gold,lit);
       if(ray.y<.11) color=pairColor(color,hazeColor(ray),clamp(.55-ray.y*4.,0.,1.));
     }
   }
-  if(ring<.0018) color=pairColor(color,cream,(.0018-ring)*530.);
-  if(ring<.00066) color=hot;
+  if(ring<.0018) color=pairColor(color,cream,(.0018-ring)*530.*weather.z);
+  if(ring<.00066 && weather.z>.65) color=hot;
   return color;
 }
 float march(vec3 origin,vec3 ray,float limit,int budget,bool reflection) {
@@ -196,7 +207,7 @@ float march(vec3 origin,vec3 ray,float limit,int budget,bool reflection) {
   for(int index=0;index<96;index++) {
     if(index>=budget || distance>=limit) break;
     vec3 p=origin+ray*distance;
-    if(p.y>635. && ray.y>=0.) break;
+    if(p.y>950. && ray.y>=0.) break;
     float ground=heightAt(p.xz);
     float gap=p.y-ground;
     if(gap<=0. && ground>=0.) {
@@ -214,8 +225,9 @@ float march(vec3 origin,vec3 ray,float limit,int budget,bool reflection) {
   return -1.;
 }
 vec3 fog(vec3 color,vec3 ray,float distance,float altitude) {
-  float amount=1.-exp(-distance*.00079*exp(-max(altitude,0.)*.0039));
-  vec3 distanceColor=pairColor(mauve,haze,max(0.,dot(ray,sun)));
+  float amount=1.-exp(-distance*.00079*weather.y*exp(-max(altitude,0.)*.0039));
+  vec3 distanceColor=weather.w>.5?pairColor(slate,hazeColor(ray),weather.y*.36):
+    pairColor(mauve,haze,max(0.,dot(ray,sun)));
   if(amount>.68) return pairColor(distanceColor,hazeColor(ray),(amount-.68)*3.125);
   return pairColor(color,distanceColor,amount/.68);
 }
@@ -239,6 +251,7 @@ vec3 landColor(vec3 p,vec3 ray,float distance,bool reflected) {
   else if(exposure<.43) color=ramp(ink,plum,slate,violet,exposure/.43);
   else if(grove<.45) color=ramp(violet,copper,ochre,gold,(exposure-.35)*1.38);
   else color=ramp(violet,mauve,copper,ochre,(exposure-.37)*1.48);
+  if(weather.w>.5) color=ramp(ink,indigo,slate,weather.w<1.5?olive:overcast,exposure*weather.z);
   // Small stands break up the broad slope colors in the foreground.
   if(!reflected && distance<820. && p.y>8. && grove>.49) {
     float stand=hash(floor(p.xz*vec2(.33,.22)+vec2(floor(p.x*.16)*.5,0.)));
@@ -272,7 +285,7 @@ void main(){
     vec3 tinted=reflected==hot||reflected==cream?gold:
       reflected==gold||reflected==peach?copper:reflected==haze?mauve:reflected;
     color=pairColor(base,tinted,clamp(.60+ray.y*.75+swell*.39,0.,.86));
-    float glint=pow(spec,105.)*(wave+.5)*1.7;
+    float glint=pow(spec,105.)*(wave+.5)*1.7*weather.z;
     if(glint>threshold()) color=glint>.73?cream:gold;
     color=fog(color,ray,water*.65,6.);
   } else {
@@ -463,6 +476,24 @@ const loadouts=[
 ].map(([era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime])=>
   ({era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime}));
 const selectedLoadout=()=>loadouts[selectedAircraft];
+// Game tuning derived from the general lift/drag relationships, grouped by airframe.
+const aerodynamicProfiles=[
+  ['宽翼 · 均衡',68,.82,1.72,.62,7.5,1.00,4.1,28,1.00,1.00],
+  ['宽翼 · 重载',67,.71,1.27,.52,6.3,1.02,3.8,26,1.08,1.04],
+  ['三角翼 · 刚烈',72,.73,1.89,.53,8.6,.98,3.55,26,1.03,1.01],
+  ['双发 · 稳健',70,.85,1.69,.62,7.4,1,4.35,28,.98,1.06],
+  ['轻型 · 灵敏',67,.91,2.04,.66,9.4,.99,4.32,28,.94,1.01],
+  ['舰载 · 高升力',65,.88,1.77,.65,7.9,1.02,4.7,31,1.07,1.04],
+  ['宽翼 · 高机动',70,.97,1.92,.71,8.5,1,4.55,33,.96,1.10],
+  ['宽翼 · 均衡',68,.83,1.74,.63,7.7,1,4.16,28,.99,1.02],
+  ['双座 · 重载',69,.76,1.44,.58,6.8,1.01,4.05,28,1.05,1.05],
+  ['鸭翼 · 高迎角',72,.93,1.78,.65,8.1,1,4.34,32,.98,1.07],
+  ['重型 · 稳态',60,.43,.67,.34,3.7,1.02,3.65,23,1.10,1.08],
+  ['重型 · 慢响应',57,.42,.61,.32,3.3,1.03,3.7,23,1.11,1.03],
+  ['重型 · 平衡',62,.51,.79,.39,4.2,1.01,3.55,24,1.08,1.07]
+].map(([feel,cruise,pitch,roll,yaw,response,lift,slope,stallAngle,drag,power])=>
+  ({feel,cruise,pitch,roll,yaw,response,lift,slope,stallAngle:stallAngle*rad,drag,power}));
+const selectedAero=()=>aerodynamicProfiles[selectedAircraft];
 const projectileFamilies=[
   {name:'白鹭',style:'直线曳光',duration:.90,arc:0,glow:colors.gold},
   {name:'流萤',style:'弧线曳光',duration:1.04,arc:8,glow:colors.peach},
@@ -809,7 +840,7 @@ function setupGraphics() {
   gl.disable(gl.DITHER);
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.ALWAYS);
-  const landscape=program(screenVertex,landscapeFragment,'field resolution eye right up forward shadowCenter lens time shadowHeight steps loaded reflections titleView');
+  const landscape=program(screenVertex,landscapeFragment,'field resolution eye right up forward shadowCenter lens time shadowHeight steps loaded reflections titleView sun landShape cloudWind weather cloudHeight');
   let jet;
   const screenVao=gl.createVertexArray();
   const ranges=[];
@@ -835,6 +866,7 @@ function setupGraphics() {
   gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,1,1,0,gl.RED,gl.FLOAT,new Float32Array([-1]));
   renderWorld=(camera,time,aircraft)=>{
     const {eye,right,up,forward,lens}=camera, u=landscape.uniform;
+    const environment=aircraft?flightEnvironment():environments[selectedMission];
     const center=aircraft?aircraft.position:[0,0,0];
     const surface=aircraft?Math.max(0,heightAt(center[0],center[2])):0;
     gl.useProgram(landscape.id);
@@ -846,6 +878,11 @@ function setupGraphics() {
     gl.uniform3f(u.shadowCenter,center[0],surface,center[2]);
     gl.uniform1f(u.shadowHeight,aircraft?center[1]-surface:-1);
     gl.uniform1f(u.lens,lens); gl.uniform1f(u.time,time);
+    gl.uniform3fv(u.sun,environment.sun);
+    gl.uniform2f(u.landShape,environment.relief,environment.waterline);
+    gl.uniform2f(u.cloudWind,environment.wind[0]*.003,environment.wind[2]*.003);
+    gl.uniform4fv(u.weather,environment.weather);
+    gl.uniform1f(u.cloudHeight,environment.cloudHeight);
     gl.uniform1i(u.steps,touch?46:quality>1?64:88);
     gl.uniform1i(u.loaded,terrainReady); gl.uniform1i(u.reflections,!touch && quality<3);
     gl.uniform1i(u.titleView,!aircraft);
@@ -864,6 +901,7 @@ function setupGraphics() {
     gl.uniform2fv(u.screenOffset,screenOffset);
     gl.uniform1f(u.orthographic,camera.orthographic||0);
     gl.uniform1i(u.studio,Boolean(camera.studio));
+    gl.uniform3fv(u.sun,flightEnvironment().sun);
     gl.uniform2f(u.control,aircraft.stick[0],aircraft.stick[1]);
     const span=aircraftModels[modelIndex].wing[4];
     gl.uniform2f(u.propPivots,span*.33,span*.62);
@@ -884,7 +922,7 @@ function setupGraphics() {
       terrainReady=true;
     },
     compileJet() {
-      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset propPivots propAngle lens thrust forward flicker visibility orthographic studio');
+      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset propPivots propAngle lens thrust forward flicker visibility orthographic studio sun');
     }
   };
 }
@@ -926,8 +964,13 @@ let flying=false,paused=false,simulationTime=0,accumulator=0;
 let aircraft,previous,camera,chase=false,viewBlend=0,viewFrom=0,viewElapsed=.35;
 let impact=0, warning='';
 function spawn() {
-  return {position:[2200,58,320],velocity:[-7,0,65],attitude:axisAngle([0,1,0],-.107),
-    stick:[0,0,0],rates:[0,0,0],throttle:.54,thrust:.54,speed:65,bank:0,agl:58,g:1,stall:false};
+  const environment=flightEnvironment(), aero=selectedAero();
+  const [x,,z]=routePoint(2200,0,320);
+  const surface=Math.max(0,solidHeight(x,z));
+  const forward=rotate(axisAngle([0,1,0],-.107),[0,0,1]);
+  return {position:[x,surface+environment.clearance,z],velocity:add(mul(forward,aero.cruise),environment.wind),
+    attitude:axisAngle([0,1,0],-.107), stick:[0,0,0],rates:[0,0,0],throttle:.55,thrust:.55,
+    speed:aero.cruise,bank:0,agl:environment.clearance,g:1,stall:false,stallMeter:0};
 }
 function resetFlight() {
   aircraft=spawn(); previous=aircraft; camera=null; impact=0; warning='';
@@ -973,6 +1016,31 @@ const missions=[
       {line:'护送最后一盏灯',contacts:[['guardian',3],['interceptor',3],['jammer',1]]}
     ]}
 ];
+// Every sortie starts in a different section of the periodic height field and has its own weather.
+const environments=[
+  ['暮湾湖区','17:35','晚霞 · 微风',[0,0],1,0,58,[-.416,.115,.902],[.59,1,1,0],[1.8,0,-.7],0],
+  ['南岸开阔水面','08:10','晴间多云',[290,370],.77,14,78,[-.46,.38,.79],[.65,.66,1,1],[1.3,0,2.4],0],
+  ['红叶峡谷','15:40','侧风 · 云影',[255,825],1.45,-4,122,[-.56,.26,.79],[.54,.99,.83,0],[5.6,0,1.8],1.1],
+  ['西岸山脊','18:45','薄暮 · 低云',[80,1150],1.31,1,115,[-.48,.048,.87],[.48,1.35,.45,3],[-2.8,0,2.4],.6],
+  ['旧航路入口','17:20','晴 · 湖面余光',[145,100],1.06,4,82,[-.38,.16,.91],[.60,.93,1,0],[2,0,.4],.4],
+  ['南岸信标区','18:05','岸边薄雾',[265,535],.87,7,95,[-.52,.088,.85],[.55,1.46,.73,0],[1.6,0,-1.2],.6],
+  ['镜谷山口','15:55','阵雨 · 侧风',[110,1270],1.34,-3,132,[-.26,.19,.95],[.43,2.25,.56,2],[5.5,0,2.8],2.1],
+  ['雾脊航线','18:22','低云 · 阵风',[-140,1770],1.49,-10,151,[-.46,.081,.88],[.45,2.6,.51,2],[-3.9,0,3.2],1.5],
+  ['北岭归航区','19:05','夜色 · 山雾',[-445,2310],1.53,-8,137,[-.37,.021,.93],[.52,1.75,.38,3],[-2.4,0,-1.9],1]
+].map(([area,clock,condition,offset,relief,waterline,clearance,sun,weather,wind,gust],index)=>
+  ({area,clock,condition,offset,relief,waterline,clearance,sun:unit(sun),weather,wind,gust,
+    cloudHeight:[410,520,390,275,420,335,290,230,355][index],rain:index===6}));
+let activeEnvironment=0;
+const flightEnvironment=()=>environments[activeEnvironment];
+function routePoint(x,y,z) {
+  const [shiftX,shiftZ]=flightEnvironment().offset;
+  return [x+shiftX,y,z+shiftZ];
+}
+function airContact(x,y,z) {
+  const position=routePoint(x,y,z);
+  position[1]=Math.max(y,solidHeight(position[0],position[2])+31);
+  return position;
+}
 const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'干扰机',
   interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点'};
 const targetProfiles={
@@ -1008,7 +1076,7 @@ function missionTarget(kind,position,health,phase) {
     heading:0,evade:0,evadeTick:-1,maxHealth:health};
 }
 function shorePosition(z,direction) {
-  let x=2200;
+  let x=routePoint(2200,0,0)[0];
   for(let attempt=0;attempt<165 && solidHeight(x,z)<12;attempt++) x+=direction*6;
   return [x,Math.max(0,solidHeight(x,z))+2,z];
 }
@@ -1028,12 +1096,12 @@ function resetMission() {
     return;
   }
   for(let i=0;i<config.drones;i++) {
-    mission.targets.push(missionTarget('drone',[2170+(i%3-1)*78,51+(i%3)*22,550+i*76],17+config.skill*5,i));
+    mission.targets.push(missionTarget('drone',airContact(2170+(i%3-1)*78,51+(i%3)*22,550+i*76),17+config.skill*5,i));
   }
-  if(config.lookout) mission.targets.push(missionTarget('lookout',[2120,133,925],24,.2));
-  if(config.jammer) mission.targets.push(missionTarget('jammer',[2250,98,870],23,2.1));
+  if(config.lookout) mission.targets.push(missionTarget('lookout',airContact(2120,133,925),24,.2));
+  if(config.jammer) mission.targets.push(missionTarget('jammer',airContact(2250,98,870),23,2.1));
   for(let i=0;i<config.ground;i++) {
-    mission.targets.push(missionTarget('ground',shorePosition(680+i*210,i%2===0?-1:1),19,i));
+    mission.targets.push(missionTarget('ground',shorePosition(routePoint(0,0,680+i*210)[2],i%2===0?-1:1),19,i));
   }
   cycleTarget();
 }
@@ -1049,13 +1117,13 @@ function spawnCampaignWave() {
     if(profile.air) {
       const slot=airIndex++;
       const spread=kind==='guardian'?95:67;
-      const x=2140+(slot%4-1.5)*spread;
-      const z=Math.max(555+advance,center[2]+255)+Math.floor(slot/2)*95+(kind==='lookout'?160:0);
+      const [x,,routeZ]=routePoint(2140+(slot%4-1.5)*spread,0,555+advance);
+      const z=Math.max(routeZ,center[2]+255)+Math.floor(slot/2)*95+(kind==='lookout'?160:0);
       position=[x,Math.max(52+(slot%3)*24+(kind==='lookout'?50:0),solidHeight(x,z)+30),z];
     } else {
       const slot=groundIndex++;
-      const z=Math.max(572+advance,center[2]+221)+slot*96;
-      const x=2110+(slot%2)*145;
+      const [x,,routeZ]=routePoint(2110+(slot%2)*145,0,572+advance);
+      const z=Math.max(routeZ,center[2]+221)+slot*96;
       position=kind==='beacon'?[x,Math.max(0,solidHeight(x,z))+53,z]:shorePosition(z,slot%2===0?-1:1);
     }
     const health=profile.health+(kind==='beacon'?0:config.skill*2);
@@ -1067,8 +1135,7 @@ function advanceCampaign() {
   if(!campaign || mission.targets.some(target=>target.health>0) || campaign.wave+1>=mission.config.waves.length) return false;
   campaign.wave++;
   campaign.banner=5;
-  const {tracers,decoys}=selectedLoadout();
-  mission.tracers=Math.min(tracers,mission.tracers+2);
+  const {decoys}=selectedLoadout();
   mission.decoys=Math.min(decoys,mission.decoys+1);
   mission.warningTime=5;
   mission.incoming=null;
@@ -1112,7 +1179,7 @@ function updateCampaign(dt) {
     if(target.kind!=='convoy'||!target.health) continue;
     const wave=simulationTime*.18+target.phase;
     const z=target.center[2]+Math.sin(wave)*78;
-    const direction=target.center[0]<2200?-1:1;
+    const direction=target.center[0]<routePoint(2200,0,0)[0]?-1:1;
     let x=target.center[0]+Math.sin(wave*.67)*24;
     for(let move=0;move<22&&solidHeight(x,z)<8;move++) x+=direction*4;
     target.position=[x,Math.max(0,solidHeight(x,z))+2,z];
@@ -1142,8 +1209,23 @@ function campaignHud(s) {
 }
 function resetArmament() {
   const {tracers,decoys}=selectedLoadout();
-  Object.assign(mission,{tracers,decoys,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
+  Object.assign(mission,{tracers,decoys,missileReserve:tracers*11,missileReload:0,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
     warningTime:5,charge:0,manualLockTime:0,lockLostTime:0,incoming:null,effects:[]});
+}
+const missileReloadDelay=kit=>2.55+kit.lockTime*.9;
+function updateMissileRack(dt) {
+  const kit=selectedLoadout();
+  if(mission.tracers>=kit.tracers || !mission.missileReserve) {
+    mission.missileReload=0;
+    return;
+  }
+  if(mission.missileReload<=0) mission.missileReload=missileReloadDelay(kit);
+  mission.missileReload=Math.max(0,mission.missileReload-dt);
+  if(mission.missileReload===0) {
+    mission.tracers++;
+    mission.missileReserve--;
+    if(mission.tracers<kit.tracers&&mission.missileReserve) mission.missileReload=missileReloadDelay(kit);
+  }
 }
 const supportActive=kind=>mission.targets.some(target=>target.kind===kind&&target.health>0);
 const jammerRadius=360;
@@ -1312,15 +1394,19 @@ function firePulse() {
 function fireTracer() {
   if(!mission || mission.recoveryTime>0 || mission.tracerTime>0) return;
   mission.tracerTime=.32;
-  if(mission.tracers<=0) {notifyMission('导弹已用尽');return;}
+  if(mission.tracers<=0) {
+    notifyMission(mission.missileReserve?'导弹补充中':'导弹已用尽');
+    return;
+  }
   if(!mission.locked || mission.charge<1 || !trackable(mission.locked,rotate(aircraft.attitude,[0,0,1]),.86)) {
     notifyMission(mission.locked?'等待目标锁定':'当前无锁定目标');
     return;
   }
   mission.tracers--;
+  if(mission.missileReserve&&mission.missileReload<=0) mission.missileReload=missileReloadDelay(selectedLoadout());
   playCue('tracer');
-  notifyMission('导弹发射 · 剩余 '+mission.tracers+' 枚');
-  mission.tracerTime=.85;
+  notifyMission('导弹发射 · 待发 '+mission.tracers+' 枚');
+  mission.tracerTime=.64+mission.lockTime*.35;
   mission.launchTime=.45;
   const launchSide=mission.tracers%2?1:-1;
   const origin=add(aircraft.position,rotate(aircraft.attitude,[launchSide*1.5,-.4,.75]));
@@ -1339,11 +1425,28 @@ const flightPatterns={
   drone:[.51,21,8],interceptor:[.81,46,17],guardian:[.29,28,8],
   lookout:[.34,35,6],jammer:[.34,35,6]
 };
+function updateIncomingEvasion(incoming,dt) {
+  // The threat is an arcade timer. Use accumulated changes in flight direction to break it.
+  const s=aircraft;
+  const turning=Math.hypot(s.rates[0],s.rates[2])+
+    Math.abs(Math.sin(s.bank))*Math.min(2.4,Math.max(0,s.g))*.15;
+  const cover=!clearSight(incomingPoint(incoming,s),s.position);
+  const gain=cover?2.8:turning>.34?(turning-.10)*1.43:-.30;
+  incoming.evade=clamp((incoming.evade||0)+dt*gain,0,1);
+  if(incoming.evade<1) return false;
+  createBurst(incomingPoint(incoming,s),false);
+  mission.incoming=null;
+  mission.warningTime=4;
+  notifyMission('规避成功 · 来袭导弹已脱锁');
+  playCue('lock');
+  return true;
+}
 function updateMission(dt) {
   if(!mission) return;
   const {config}=mission;
   mission.pulseTime=Math.max(0,mission.pulseTime-dt);
   mission.tracerTime=Math.max(0,mission.tracerTime-dt);
+  updateMissileRack(dt);
   mission.muzzleTime=Math.max(0,mission.muzzleTime-dt);
   mission.launchTime=Math.max(0,mission.launchTime-dt);
   mission.noticeTime=Math.max(0,mission.noticeTime-dt);
@@ -1382,6 +1485,7 @@ function updateMission(dt) {
   if(mission.complete || !config.skill) return;
   const incoming=mission.incoming;
   if(incoming) {
+    if(updateIncomingEvasion(incoming,dt)) return;
     incoming.remaining-=dt;
     if(incoming.remaining<=0) {
       mission.incoming=null;
@@ -1395,7 +1499,7 @@ function updateMission(dt) {
       target.kind!=='lookout'&&target.kind!=='jammer'&&targetRange(target)<radius);
     if(source && (mission.warningTime-=dt)<=0) {
       const duration=2.8-config.skill*.42;
-      mission.incoming={origin:source.position.slice(),duration,remaining:duration};
+      mission.incoming={origin:source.position.slice(),duration,remaining:duration,evade:0};
       playCue('incoming');
     }
   }
@@ -1421,28 +1525,30 @@ function simulate(dt) {
   const throttle=touchThrottle===null?clamp(s.throttle+(.53*dt)*(Number(keys.has('ShiftLeft')||keys.has('ShiftRight'))-
     Number(keys.has('ControlLeft')||keys.has('ControlRight'))),0,1):touchThrottle;
   const thrust=approach(s.thrust,throttle,4.5,dt);
-  const basis=basisOf(s.attitude);
-  const pitch=Math.asin(clamp(basis[2][1],-1,1)), bank=bankOf(basis);
-  const airSpeed=length(s.velocity);
-  const alpha=Math.atan2(-dot(s.velocity,basis[1]),Math.max(6,dot(s.velocity,basis[2])));
-  const authority=clamp((airSpeed-19)/35,.31,1)*(s.stall?.66:1);
-  const heavy=selectedModel().role==='bomber';
-  const turn=Math.sin(bank)*clamp(9.8/Math.max(23,airSpeed)*1.48,.12,.49);
+  const environment=flightEnvironment(), aero=selectedAero();
+  const phase=simulationTime*.63+s.position[2]*.009;
+  const wind=add(environment.wind,[Math.sin(phase)*environment.gust,
+    Math.sin(phase*1.47)*environment.gust*.24,Math.cos(phase*.81)*environment.gust*.6]);
+  const relativeAir=sub(s.velocity,wind);
+  const airSpeed=length(relativeAir);
+  const authority=clamp((airSpeed-12)/(aero.cruise*.70),.28,1.09)*(s.stall?.68:1);
+  // Damp rates on release, with no pitch or roll torque toward the world horizon.
   const rates=[
-    (stick[0]*(heavy?.59:.78)-pitch*.55*(1-Math.abs(stick[0])))*authority,
-    (stick[1]*(heavy?.92:1.62)-bank*.69*(1-Math.abs(stick[1])))*authority,
-    (stick[2]*(heavy?.47:.66)+turn)*authority
-  ].map((v,i)=>approach(s.rates[i],v,7,dt));
+    stick[0]*aero.pitch*authority,stick[1]*aero.roll*authority,stick[2]*aero.yaw*authority
+  ].map((v,i)=>approach(s.rates[i],v,aero.response,dt));
   const attitude=integrateAttitude(s.attitude,[-rates[0],rates[2],-rates[1]],dt);
   const [right,up,forward]=basisOf(attitude);
-  const flow=unit(s.velocity);
+  const alpha=Math.atan2(-dot(relativeAir,up),Math.max(3,dot(relativeAir,forward)));
+  const flow=unit(relativeAir);
   const liftDirection=unit(sub(up,mul(flow,dot(up,flow))));
-  // Angle of attack builds lift until separation, then rapidly loses it.
-  const separated=clamp((Math.abs(alpha)-.32)/.44,0,1);
-  const lift=clamp((airSpeed/64)**2*(9.6+clamp(alpha,-.55,.45)*48)*(1-.90*separated),-15,42);
-  const slip=dot(s.velocity,right);
-  const dragForce=1.1+airSpeed*airSpeed*.00265+Math.abs(lift)*.11+separated*9;
-  const power=thrust*25+Math.max(0,thrust-.86)*25;
+  // Normalized dynamic pressure and a softened post-stall lift curve keep transient inputs forgiving.
+  const pressure=(airSpeed/aero.cruise)**2;
+  const separated=smooth(clamp((Math.abs(alpha)-aero.stallAngle)/.34,0,1));
+  const coefficient=aero.lift+clamp(alpha,-aero.stallAngle,aero.stallAngle)*aero.slope;
+  const lift=clamp(9.81*pressure*coefficient*(1-.75*separated),-24,55);
+  const slip=dot(relativeAir,right);
+  const dragForce=(1.1+pressure*10.3+lift*lift*.013+separated*9)*aero.drag;
+  const power=(thrust*25+Math.max(0,thrust-.86)*25)*aero.power;
   let acceleration=add(add(mul(forward,power),mul(flow,-dragForce)),mul(liftDirection,lift));
   acceleration=add(acceleration,[-right[0]*slip*1.16,-9.81-right[1]*slip*1.16,-right[2]*slip*1.16]);
   let velocity=add(s.velocity,mul(acceleration,dt));
@@ -1463,11 +1569,12 @@ function simulate(dt) {
     nextAttitude=blendAttitude(attitude,quatMultiply(axisAngle([0,1,0],Math.atan2(forward[0],forward[2])),
       axisAngle([-1,0,0],.24)),.23);
   }
-  const agl=position[1]-surface, speed=length(velocity);
-  const stall=s.stall?speed<42||separated>.30:speed<35||separated>.55;
+  const agl=position[1]-surface, speed=length(sub(velocity,wind));
+  const stallMeter=clamp((s.stallMeter||0)+dt*(Math.abs(alpha)>aero.stallAngle?1:-2.4),0,.62);
+  const stall=s.stall?stallMeter>.08:stallMeter>.30;
   aircraft={position,velocity,attitude:nextAttitude,stick,rates,throttle,thrust,speed,
-    bank:bankOf(basisOf(nextAttitude)),agl,g:approach(s.g,lift/9.81,8,dt),stall};
-  warning=agl<17 && (velocity[1]<2||agl<8)?'拉起':stall?'失速':speed>101?'超速':'';
+    bank:bankOf(basisOf(nextAttitude)),agl,g:approach(s.g,lift/9.81,8,dt),stall,stallMeter};
+  warning=agl<17 && (velocity[1]<2||agl<8)?'拉起':stall?'失速':speed<aero.cruise*.53?'低速':speed>109?'超速':'';
   impact=Math.max(0,impact-dt*2.3);
   for(let i=particles.length-1;i>=0;i--) {
     const p=particles[i];
@@ -1532,7 +1639,11 @@ function flightCamera(s,dt) {
 }
 function titleCamera(time) {
   const turn=Math.sin(time*.23)*.036;
-  return makeCamera([2275+Math.sin(time*.17)*23,48+Math.sin(time*.24)*5,410+Math.sin(time*.16)*32],
+  const environment=environments[selectedMission];
+  const x=2275+environment.offset[0]+Math.sin(time*.17)*23;
+  const z=410+environment.offset[1]+Math.sin(time*.16)*32;
+  const y=Math.max(0,solidHeight(x,z,environment))+Math.max(48,environment.clearance*.72)+Math.sin(time*.24)*5;
+  return makeCamera([x,y,z],
     [-.13+turn,.065,.994],[0,1,0],.56);
 }
 function project(point,camera) {
@@ -1695,8 +1806,9 @@ function titleScreen(time) {
   line(center-38,emblemY+2,center-19,emblemY+2,colors.haze);
   line(center+19,emblemY+2,center+38,emblemY+2,colors.haze);
   wordmark(center,middle-88,scale);
-  type('秋日湖区 · 最后一缕光',center+1,middle-20,13,colors.ink,'display','center');
-  type('秋日湖区 · 最后一缕光',center,middle-21,13,colors.cream,'display','center');
+  const subtitle=selectedMission===0?'秋日湖区 · 最后一缕光':'秋日湖区 · '+environments[selectedMission].area;
+  type(subtitle,center+1,middle-20,width<235?11:13,colors.ink,'display','center');
+  type(subtitle,center,middle-21,width<235?11:13,colors.cream,'display','center');
   const buttonY=middle-5, buttonWidth=Math.min(240,width-44), left=Math.round(center-buttonWidth/2);
   if(failure) {
     type(failure,center,buttonY+17,10,colors.cream,'display','center');
@@ -1712,7 +1824,7 @@ function titleScreen(time) {
     if(checkpoint) {
       const span=Math.min(width-18,192), half=Math.floor((span-6)/2), x=Math.round(center-span/2);
       canvasButton('resumeCheckpoint','继续上次',x,y,half,30,true,12);
-      canvasButton('launch','重新出击',x+half+6,y,half,30,false,12);
+      canvasButton('launch','选机出击',x+half+6,y,half,30,false,12);
     } else {
       const x=Math.round(center-62), w=124, h=30;
       hitBoxes.launch=[x,y,w,h];
@@ -1720,7 +1832,7 @@ function titleScreen(time) {
       rect(x,y,w,h,colors.black);
       rect(x+3,y+3,w-6,h-6,Math.floor(time*4)%2?colors.gold:colors.ochre);
       border(x,y,w,h,colors.gold);
-      type('出 击',center,y+21,14,colors.ink,'display','center');
+      type('选机出击',center,y+21,14,colors.ink,'display','center');
     }
     canvasButton('hangar','机库 · 选机',width-84,19,68,22,false,10);
     if(missionInfo().chapter) canvasButton('campaignBrief','战役简报',16,19,64,22,false,10);
@@ -1742,15 +1854,15 @@ function titleScreen(time) {
     drawMissionSelector(missionX,missionY);
     if(!shortStack) {
       const kit=selectedLoadout(), config=missionInfo();
-      const kitText='机炮 '+kit.cannon+' · 导弹 '+kit.tracers+' · 热诱 '+kit.decoys;
+      const kitText='导弹 '+kit.tracers*12+' 枚 · 热诱 '+kit.decoys;
       rect(aircraftX-67,rowY+22,134,26,pattern(colors.ink,13));
       rect(missionX-67,missionY+22,134,26,pattern(colors.ink,13));
       hint(kit.era,rowY+32,colors.gold,aircraftX,9);
       hint(kitText,rowY+43,colors.cream,aircraftX,9);
       const rules=config.role==='bomber'?'大型机 · 投送信标':config.waves?'混合编队 · '+config.waves.length+' 波':
         config.lookout?(config.jammer?'预警 · 干扰 · 地面靶':'预警 · 地面靶'):config.drones?'无人机 · 巡航':'无任务目标';
-      hint(config.chapter?'暮湾航线 · 第 '+config.chapter+' 章':
-        config.difficulty?'敌机 · '+config.difficulty:'沙盒',missionY+32,colors.gold,missionX,9);
+      const environment=environments[selectedMission];
+      hint(environment.clock+' · '+environment.condition,missionY+32,colors.gold,missionX,8);
       hint(rules,missionY+43,colors.cream,missionX,9);
     }
     hintY=missionY+(shortStack?34:60);
@@ -1778,30 +1890,33 @@ function toggleBriefing() {
 }
 function campaignBriefing() {
   const config=missionInfo(), cx=width/2;
-  const w=Math.min(width-20,343), h=Math.min(height-26,198), x=Math.round(cx-w/2), y=Math.round(height/2-h/2);
+  const w=Math.min(width-20,343), bodyWidth=Math.floor((w-22)/11), body=Array.from(config.briefing);
+  const h=Math.min(height-26,Math.max(198,134+Math.ceil(body.length/bodyWidth)*14));
+  const x=Math.round(cx-w/2), y=Math.round(height/2-h/2);
   rect(0,0,width,height,pattern(colors.ink,7));
   rect(x,y,w,h,colors.ink);
   corners(x,y,w-1,h-1,10,colors.gold);
   type('暮湾航线 · 第 '+config.chapter+' 章',cx,y+20,10,colors.gold,'mono','center');
   type(config.name,cx,y+42,17,colors.cream,'display','center');
-  const bodyWidth=Math.floor((w-22)/11), body=Array.from(config.briefing);
   for(let i=0;i<body.length;i+=bodyWidth) {
     type(body.slice(i,i+bodyWidth).join(''),cx,y+61+Math.floor(i/bodyWidth)*15,11,colors.cream,'mono','center');
   }
   const labels=config.role==='bomber'?['投送引航信标',touch?'接近后点击投送':'接近后按 B 投送']:
-    ['清除多波混合编队','雷达可点选目标'];
+    ['清除多波混合编队','变向可累积规避进度'];
+  const environment=environments[selectedMission];
+  type(environment.clock+' · '+environment.condition,cx,y+h-67,9,colors.gold,'mono','center');
   type(labels[0]+' · '+config.waves.length+' 波',cx,y+h-53,9,colors.gold,'mono','center');
   type(labels[1],cx,y+h-39,9,colors.cream,'mono','center');
   const bw=Math.floor((w-34)/2);
   canvasButton('closeBrief','返回',x+12,y+h-30,bw,20,false,11);
-  canvasButton('executeBrief','本章出击',x+w-12-bw,y+h-30,bw,20,true,11);
+  canvasButton('executeBrief','进入机库',x+w-12-bw,y+h-30,bw,20,true,11);
 }
 
 const hangarViews=[
   {label:'斜视'}, {label:'顶视',axis:[0,1,0],up:[0,0,1]},
   {label:'侧视',axis:[1,0,0],up:[0,1,0]}, {label:'正视',axis:[0,0,1],up:[0,1,0]}
 ];
-let hangar=false, hangarView=0, hangarYaw=.82, hangarPitch=.41, hangarDrag=null;
+let hangar=false, hangarFromBrief=false, hangarView=0, hangarYaw=.82, hangarPitch=.41, hangarDrag=null;
 function hangarScreen(time) {
   gl.clearColor(.125,.094,.176,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
@@ -1826,9 +1941,12 @@ function hangarScreen(time) {
   renderJet(modelCamera,model,time,1,[2*previewCenter/width-1,1-(previewTop+previewBottom)/height]);
   rect(0,0,width,49,colors.black);
   line(0,48,width-1,48,colors.haze);
-  type('机库',19,29,20,colors.cream,'display');
-  type('选择你的飞机',narrow?74:91,28,11,colors.gold);
-  canvasButton('closeHangar','返回',width-69,15,52,21,false,11);
+  type('机库',narrow?12:19,29,narrow?16:20,colors.cream,'display');
+  if(!narrow) type(missionInfo().name+' · 选择机型',91,28,11,colors.gold);
+  const returnWidth=narrow?37:52, confirmWidth=narrow?62:85;
+  const returnX=width-returnWidth-12;
+  canvasButton('closeHangar','返回',returnX,15,returnWidth,21,false,11);
+  canvasButton('confirmSortie','确认出击',returnX-confirmWidth-6,15,confirmWidth,21,true,11);
   const available=compatibleAircraft();
   const columns=narrow?2:1, rowCount=Math.ceil(available.length/columns);
   const rowHeight=narrow?Math.min(19,Math.floor((height-listTop-92)/rowCount)):
@@ -1845,21 +1963,21 @@ function hangarScreen(time) {
     type(airframe.name,x+7,y+Math.round((rowHeight-2)/2+3),Math.min(11,rowHeight-3),active?colors.ink:colors.cream);
   });
   const x=narrow?15:width-w-15, y=narrow?height-89:71;
-  const kit=selectedLoadout(), projectile=selectedProjectile();
-  rect(x,y,w,narrow?74:172,colors.black);
-  corners(x,y,w-1,narrow?73:171,8,colors.haze);
+  const kit=selectedLoadout(), projectile=selectedProjectile(), aero=selectedAero();
+  rect(x,y,w,narrow?74:184,colors.black);
+  corners(x,y,w-1,narrow?73:183,8,colors.haze);
   type(selectedModel().name,x+8,y+18,15,colors.cream);
   const info=narrow?[
-    kit.era+' · '+projectile.name,
-    '机炮 '+kit.cannon+' 点 · 导弹 '+kit.tracers+' 枚 · 热诱 '+kit.decoys,
-    '锁定 '+kit.lockTime.toFixed(2)+' 秒 · '+projectile.style
+    aero.feel,
+    '待发 '+kit.tracers+' · 备弹 '+kit.tracers*11+' · '+projectile.name,
+    '补充 '+missileReloadDelay(kit).toFixed(1)+' 秒/枚'
   ]:[
     kit.era,'导弹 · '+projectile.name+' × '+kit.tracers,projectile.style+' · '+kit.tracerDamage+' 点',
     '锁定 '+kit.lockTime.toFixed(2)+' 秒','机炮 '+kit.cannon+' 点 / 发','间隔 '+kit.cannonInterval.toFixed(3)+' 秒',
-    '热诱弹 × '+kit.decoys
+    '备弹 '+kit.tracers*11+' · '+missileReloadDelay(kit).toFixed(1)+' 秒/枚',aero.feel
   ];
   info.forEach((entry,index)=>type(entry,x+8,y+31+index*(narrow?14:16),10,index===1?colors.gold:colors.cream));
-  const mockupX=narrow?x+w-47:x+12, mockupY=narrow?y+15:y+150;
+  const mockupX=narrow?x+w-47:x+12, mockupY=narrow?y+15:y+166;
   const fin=projectile.arc===0?4:projectile.arc<10?6:8;
   polygon([[mockupX,mockupY-2],[mockupX+5,mockupY-fin],[mockupX+9,mockupY-2],
     [mockupX+25,mockupY-2],[mockupX+34,mockupY],[mockupX+25,mockupY+2],[mockupX+9,mockupY+2],
@@ -1976,12 +2094,18 @@ function flightHud(s,cam,time) {
   const compact=width<350;
   const tapeMargin=compact?53:80;
   const leftX=Math.round(mix(compact?61:width*.25,tapeMargin+insetLeft,blendAmount));
-  const rightX=Math.round(mix(compact?width-61:width*.75,width-(touch?tapeMargin:115)-insetRight,blendAmount));
+  let rightX=Math.round(mix(compact?width-61:width*.75,width-(touch?tapeMargin:115)-insetRight,blendAmount));
   const chaseTapeY=selectedMission&&!touch?Math.max(centerY+20,screenInsets[0]+210):centerY-4;
   const tapeY=Math.round(mix(height-(touch?96:34),chaseTapeY,blendAmount));
   const span=Math.round(mix(13,32,blendAmount));
   tape(leftX,tapeY,-1,speed,span,10,'时速');
   const altitudeY=Math.min(tapeY,height-(touch?199:123)-insetBottom);
+  if(selectedMission) {
+    const radar=radarScopeBox();
+    if(altitudeY-span-9<radar.top+radar.size+35&&altitudeY+span>radar.top-16) {
+      rightX=Math.min(rightX,radar.left-44);
+    }
+  }
   tape(rightX,altitudeY,1,s.position[1],span,10,'高度');
 
   const ribbonY=Math.round(mix(27,18,blendAmount))+insetTop;
@@ -2054,6 +2178,25 @@ function drawSpray(cam) {
       }
     }
   }
+}
+function drawWeather(time) {
+  const environment=flightEnvironment();
+  if(!environment.rain) return;
+  const lean=Math.sign(environment.wind[0])*4;
+  const count=touch?24:42;
+  for(let i=0;i<count;i++) {
+    const x=wrap(i*37.37+time*(lean*12-20),width);
+    const y=wrap(i*73.61+time*(245+i%5*13),height);
+    const length=5+i%4;
+    line(x,y,x+lean,y+length,i%7===0?colors.overcast:colors.slate);
+  }
+}
+function environmentHud() {
+  const environment=flightEnvironment(), x=13+screenInsets[3], y=screenInsets[0]+7;
+  const compact=width<330, panelWidth=compact?Math.min(width-59,118):218;
+  rect(x,y,panelWidth,16,colors.ink);
+  type((compact?'':environment.area+' · ')+environment.clock+' · '+environment.condition,
+    x+4,y+11,compact?8:9,dim);
 }
 
 // Mission rendering. Contacts are depth-tested against the height field before rasterizing.
@@ -2280,9 +2423,13 @@ function radarOverview(s) {
 }
 const radarMarkerOffsets=[[0,0],[4,0],[0,4],[-4,0],[0,-4],[4,4],[-4,-4],[4,-4],[-4,4],
   [8,0],[0,8],[-8,0],[0,-8],[8,4],[4,8],[-8,4],[-4,8],[-8,-4],[-4,-8],[8,-4],[4,-8]];
-function compassRadar(s) {
+function radarScopeBox() {
   const compact=width<330;
   const size=compact?58:75, left=width-size-13-screenInsets[1], top=screenInsets[0]+(compact?62:57);
+  return {size,left,top};
+}
+function compassRadar(s) {
+  const {size,left,top}=radarScopeBox();
   const x=Math.round(left+size/2), y=Math.round(top+size/2), radius=Math.floor(size/2)-7;
   const {contacts,scope,alert}=radarOverview(s);
   rect(left,top,size,size,colors.ink);
@@ -2365,6 +2512,10 @@ function aircraftStatusHud() {
   rect(x,y,w,h,colors.ink);
   corners(x,y,w-1,h-1,7,healthColor);
   type(selectedModel().name,x+7,y+13,10,hud);
+  if(mission.tracerTime>0 || mission.missileReload>0) {
+    const timer=(mission.tracerTime>0?'冷却 '+mission.tracerTime.toFixed(1):'补弹 '+mission.missileReload.toFixed(1))+' 秒';
+    type(timer,right-7,y+11,8,dim,'mono','right');
+  }
   const originX=x+(compact?23:30), originY=y+(touch?34:39), scale=compact?4.7:5.6;
   for(const {vertices,color} of airplanePreviews[selectedAircraft]) {
     const horizontal=vertices.reduce((total,vertex)=>total+vertex[0],0)/3;
@@ -2376,7 +2527,7 @@ function aircraftStatusHud() {
   }
   const column=x+(compact?47:58), valueX=right-7, kit=selectedLoadout();
   const rows=selectedMission?[
-    ['导弹',mission.tracers+' / '+kit.tracers,mission.launchTime>0?colors.hot:dim],
+    ['导弹',mission.tracers+' + '+mission.missileReserve,mission.launchTime>0?colors.hot:dim],
     ['热诱弹',mission.decoys+' / '+kit.decoys,mission.incoming?colors.red:dim],
     ['护盾',mission.shield+'%',hud]
   ]:[['机体',health<100?'受损':'完好',healthColor]];
@@ -2454,10 +2605,10 @@ function missionNotice(s) {
     const radians=Math.atan2(dot(offset,[direction[2],0,-direction[0]]),dot(offset,direction));
     const directions=['正前','右前','右侧','右后','后方','左后','左侧','左前'];
     const bearing=directions[wrap(Math.round(radians/(Math.PI/4)),8)];
-    message='导弹来袭 · '+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+' 秒';
+    message='来袭 '+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+' 秒 · 规避 '+Math.round((threat.evade||0)*100)+'%';
   }
   const compact=width<330, center=width/2;
-  const y=compact?screenInsets[0]+164:height/2-79, w=Math.min(width-12,188);
+  const y=compact?screenInsets[0]+164:height/2-79, w=Math.min(width-12,220);
   rect(center-w/2,y-12,w,17,colors.ink);
   const color=threat&&Math.floor(simulationTime*8)%2===0?colors.red:colors.cream;
   type(message,center,y+1,width<235?9:11,color,'display','center');
@@ -2655,13 +2806,15 @@ function readCheckpoint() {
 }
 function saveCheckpoint() {
   if(!flying || !mission) return;
-  const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime}=mission;
+  const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,
+    missileReserve,missileReload,tracerTime}=mission;
   const snapshot={
-    version:1, model:selectedAircraft, level:selectedMission, time:simulationTime, chase,
+    version:1, model:selectedAircraft, level:selectedMission, time:simulationTime, chase, environment:activeEnvironment,
     flight:aircraft, targets:mission.targets, lock:mission.targets.indexOf(mission.locked), charge:mission.charge,
     effects:mission.effects.filter(effect=>effect.kind==='tracer').map(({target,...effect})=>
       ({...effect,targetIndex:mission.targets.indexOf(target)})),
-    status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,campaign:mission.campaign},
+    status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,
+      missileReserve,missileReload,tracerTime,campaign:mission.campaign},
     tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]}
   };
   const encoded=JSON.stringify(snapshot);
@@ -2675,6 +2828,7 @@ function resumeCheckpoint() {
   if(!ready || flying || !checkpoint) return;
   const snapshot=JSON.parse(JSON.stringify(checkpoint));
   selectedAircraft=snapshot.model;selectedMission=snapshot.level;
+  activeEnvironment=environments[snapshot.environment]?snapshot.environment:0;
   flying=true;paused=false;simulationTime=snapshot.time;
   resetFlight();resetMission();
   aircraft=snapshot.flight;previous=aircraft;
@@ -2700,10 +2854,12 @@ addEventListener('pagehide',saveCheckpoint);
 
 // Input. All coordinates and hit areas are measured on the pixel canvas.
 function launch() {
-  if(!ready||flying) return;
+  if(!ready||flying||!hangar) return;
   fitAircraftToMission();
-  briefing=false;
+  activeEnvironment=selectedMission;
+  briefing=hangar=false;
   flying=true;paused=false;simulationTime=0;
+  pressure=headroom=0;
   chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
   resetFlight();startAudio();
   resetMission();
@@ -2729,13 +2885,9 @@ function togglePause() {
 }
 function restartMission() {
   if(!flying) return;
-  paused=false;
-  simulationTime=0;
-  keys.delete('KeyJ');keys.delete('KeyK');keys.delete('KeyL');combatPointers.clear();
-  resetFlight();
-  resetMission();
-  saveCheckpoint();
-  notifyMission('任务重新开始 · 装备已补满');
+  paused=true;
+  returnToTitle();
+  enterHangar();
 }
 function openNextChapter() {
   if(!flying||!mission?.campaign||!mission.complete||mission.config.next===undefined) return;
@@ -2746,8 +2898,15 @@ function openNextChapter() {
   fitAircraftToMission();
   briefing=true;
 }
-function toggleHangar() {
-  if(ready&&!flying) {briefing=false;hangar=!hangar;hangarDrag=null;}
+function enterHangar() {
+  if(!ready||flying||hangar) return;
+  fitAircraftToMission();
+  hangarFromBrief=briefing;
+  briefing=false;hangar=true;hangarDrag=null;
+}
+function closeHangar() {
+  if(!hangar) return;
+  hangar=false;hangarDrag=null;briefing=hangarFromBrief;
 }
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
@@ -2760,22 +2919,20 @@ addEventListener('keydown',event=>{
   keys.add(event.code);
   if(event.repeat) return;
   if(event.code==='Enter') {
-    if(hangar) toggleHangar();
-    else if(briefing) launch();
+    if(hangar) launch();
     else if(paused&&flying) togglePause();
-    else if(!flying&&checkpoint) resumeCheckpoint();
-    else launch();
+    else enterHangar();
   }
   if(!briefing && (event.code==='ArrowLeft' || event.code==='ArrowRight')) changeAircraft(event.code==='ArrowLeft'?-1:1);
   if(!briefing && !hangar && (event.code==='ArrowUp' || event.code==='ArrowDown')) changeMission(event.code==='ArrowUp'?-1:1);
   if(event.code==='Backspace') returnToTitle();
   if(event.code==='Escape') {
-    if(hangar) toggleHangar();
+    if(hangar) closeHangar();
     else if(briefing) toggleBriefing();
     else if(flying) togglePause();
     else skipTutorial();
   }
-  if(event.code==='KeyH') toggleHangar();
+  if(event.code==='KeyH') {if(hangar) closeHangar();else enterHangar();}
   if(event.code==='KeyG'&&!hangar) toggleBriefing();
   if(event.code==='KeyN') openNextChapter();
   if(event.code==='KeyC') toggleView();
@@ -2809,7 +2966,8 @@ glass.addEventListener('pointerdown',event=>{
   if(event.button!==0) return;
   const p=pointer(event);
   if(hangar) {
-    if(inside(p,hitBoxes.closeHangar)) toggleHangar();
+    if(inside(p,hitBoxes.closeHangar)) closeHangar();
+    else if(inside(p,hitBoxes.confirmSortie)) launch();
     else {
       const choice=hitBoxes.aircraftChoices?.find(entry=>inside(p,entry.slot));
       const view=hitBoxes.hangarViews?.findIndex(slot=>inside(p,slot))??-1;
@@ -2824,13 +2982,13 @@ glass.addEventListener('pointerdown',event=>{
   }
   if(briefing) {
     if(inside(p,hitBoxes.closeBrief)) toggleBriefing();
-    else if(inside(p,hitBoxes.executeBrief)) launch();
+    else if(inside(p,hitBoxes.executeBrief)) enterHangar();
     return;
   }
   if(!flying) {
-    if(inside(p,hitBoxes.launch)) launch();
+    if(inside(p,hitBoxes.launch)) enterHangar();
     else if(inside(p,hitBoxes.resumeCheckpoint)) resumeCheckpoint();
-    else if(inside(p,hitBoxes.hangar)) toggleHangar();
+    else if(inside(p,hitBoxes.hangar)) enterHangar();
     else if(inside(p,hitBoxes.campaignBrief)) toggleBriefing();
     else if(inside(p,hitBoxes.previousAircraft)) changeAircraft(-1);
     else if(inside(p,hitBoxes.nextAircraft)) changeAircraft(1);
@@ -2872,7 +3030,7 @@ glass.addEventListener('pointermove',event=>{
     hangarPitch=clamp(hangarPitch+(p[1]-hangarDrag.point[1])*.009,-1.05,1.05);
     hangarDrag.point=p;
   }
-  const overButton=['launch','resumeCheckpoint','hangar','closeHangar','previousAircraft','nextAircraft',
+  const overButton=['launch','resumeCheckpoint','hangar','closeHangar','confirmSortie','previousAircraft','nextAircraft',
     'previousMission','nextMission','pause','continueFlight','restartMission','returnToTitle',
     'campaignBrief','closeBrief','executeBrief','nextChapter','beaconDrop']
     .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(entry=>inside(p,entry.slot)) ||
@@ -2929,7 +3087,8 @@ function draw(now) {
   const elapsed=clamp((now-last)/1000,0,.1), realTime=(now-origin)/1000;
   last=now;
   if(document.hidden) return;
-  if(ready && !document.hidden) {
+  // Keep menu hit targets stationary while the pilot is choosing a plane.
+  if(ready && flying && !paused) {
     average=mix(average,elapsed*1000,.045);
     pressure=average>20?pressure+elapsed:0;
     headroom=average<17.6?headroom+elapsed:0;
@@ -2964,6 +3123,7 @@ function draw(now) {
   drawAirframeSmoke(s,cam);
   drawSpray(cam);
   drawMissionWorld(cam);
+  drawWeather(simulationTime);
   drawCanopy(canopyCoverage);
   if(canopyCoverage<16) edgeVignette();
   flightHud(s,cam,simulationTime);
@@ -2971,6 +3131,7 @@ function draw(now) {
   campaignHud(s);
   missionNotice(s);
   aircraftStatusHud();
+  environmentHud();
   drawWeaponFeedback(s,cam);
   drawDamageCue();
   tutorialHud(s);
