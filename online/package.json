@@ -1,0 +1,13 @@
+{
+  "name": "patrol-online",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:assets": "node prepare-assets.mjs",
+    "dev": "npm run prepare:assets && node dev.mjs",
+    "test": "npm run prepare:assets && node --test worker.test.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0"
+  }
+}

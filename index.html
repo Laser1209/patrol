@@ -2091,15 +2091,11 @@ function titleScreen() {
       type(summary,center,y+36,width<260?8:9,colors.cream,'mono','center');
       y+=43;
     }
-    if(checkpoint) {
-      const half=Math.floor((menuWidth-6)/2);
-      canvasButton('newMission','新任务',menuX,y,half,24,false,11);
-      canvasButton('openLan','局域网',menuX+half+6,y,half,24,false,11);
-    } else {
-      canvasButton('newMission','新任务',menuX,y,menuWidth,25,true,12);
-      canvasButton('openLan','局域网',menuX,y+32,menuWidth,22,false,11);
-      y+=30;
-    }
+    canvasButton('newMission','新任务',menuX,y,menuWidth,24,!checkpoint,checkpoint?11:12);
+    const half=Math.floor((menuWidth-6)/2);
+    canvasButton('openOnline','邀请好友',menuX,y+30,half,22,false,10);
+    canvasButton('openLan','离线局域网',menuX+half+6,y+30,half,22,false,10);
+    y+=25;
     if(y+44<height-24) {
       type(checkpointFallback?'存档仅保留在此页面':tutorialSkipped?'教程已跳过':'按 Esc 跳过教程',center,y+43,9,colors.gold,'mono','center');
     }
@@ -3157,6 +3153,7 @@ function releaseLanPeer() {
   peer?.close();
 }
 function closeLanRoom() {
+  closeOnlineRoom();
   if(lan.connected) sendLanPacket(lan.control,{kind:'leave'});
   releaseLanPeer();
   const dialog=lan.dialog;
@@ -3172,6 +3169,8 @@ function openLanRoom(aircraftIndex=0) {
   if(typeof RTCPeerConnection!=='function') lan.status='此浏览器未提供局域网连接功能';
 }
 function failLanPeer(status) {
+  if(recoverOnlineConnection(status)) return;
+  closeOnlineRoom();
   const wasPlaying=lan.phase==='playing', wasConnected=lan.connected;
   releaseLanPeer();
   Object.assign(lan,{phase:'error',localReady:false,remoteReady:false,status});
@@ -3248,6 +3247,7 @@ function setLanConnectionTimer(epoch,ms) {
   },ms);
 }
 function lanConnectionFailure(peer) {
+  if(onlineRoom) return onlineRoom.mode==='relay'?'中继连接失败':'好友直连失败';
   if(['connected','completed'].includes(peer?.iceConnectionState)) return '网络已连通，但游戏握手未完成，请重新建房';
   if(lan.phase==='answer') return '请确认房主已粘贴回执。仍失败可换网络或用中继';
   return lan.relay?'中继连接失败，请检查两端中继设置':'直连失败，热点可能隔离设备，请换网络或使用中继';
@@ -3260,6 +3260,7 @@ function finishLanHandshake() {
   if(lan.connected||!lan.helloSent||!lan.helloReceived) return;
   clearTimeout(lan.timer);
   lan.connected=true;
+  completeOnlineConnection();
   lan.phase='room';
   lan.status='';
   lan.dialog?.close();
@@ -3287,10 +3288,10 @@ function attachLanChannel(channel,epoch) {
   });
   finishLanHandshake();
 }
-function createLanPeer(role,session) {
+function createLanPeer(role,session,onlineSettings) {
   releaseLanPeer();
   if(typeof RTCPeerConnection!=='function') throw new Error('此浏览器未提供局域网连接功能');
-  const settings=lan.relay?{iceServers:[lan.relay],iceTransportPolicy:'relay'}:{iceServers:[]};
+  const settings=onlineSettings||(lan.relay?{iceServers:[lan.relay],iceTransportPolicy:'relay'}:{iceServers:[]});
   const peer=new RTCPeerConnection(settings), epoch=lan.epoch;
   Object.assign(lan,{peer,role,session,localReady:false,remoteReady:false,revision:0,round:0,status:'',invite:'',response:''});
   peer.addEventListener('connectionstatechange',()=>{
@@ -3548,11 +3549,213 @@ function showLanRelaySettings() {
   dialog.addEventListener('close',()=>{if(lan.dialog===dialog) lan.dialog=null;dialog.remove();});
   dialog.append(form);document.body.append(dialog);dialog.showModal();
 }
+// Online invitations share the same game data channels as offline LAN.
+const onlineOrigin='https://patrol.etta.top';
+const onlineRoomPattern=/^[0-9A-HJKMNP-TV-Z]{10}$/;
+let lanEntryMode='offline', onlineRoom=null;
+function closeOnlineRoom() {
+  const room=onlineRoom;
+  if(!room) return;
+  onlineRoom=null;
+  clearTimeout(room.timer);
+  room.abort.abort();
+  room.socket?.close();
+}
+function completeOnlineConnection() {
+  if(!onlineRoom) return;
+  onlineRoom.established=true;
+  clearTimeout(onlineRoom.timer);
+}
+function onlineFailure(status) {
+  closeOnlineRoom();
+  failLanPeer(status);
+}
+const onlineErrors={
+  'room-not-found':'房间已过期或不存在','room-expired':'房间已过期','room-full':'房间已经有两位玩家',
+  'rate-limit':'服务繁忙，请稍后重试','relay-unavailable':'直连未成功，线上中继暂不可用'
+};
+async function onlineRequest(path,room,token) {
+  const options={method:'POST',signal:AbortSignal.any([room.abort.signal,AbortSignal.timeout(12000)])};
+  if(token) options.headers={Authorization:'Bearer '+token};
+  let response;
+  try {response=await fetch(path,options);}
+  catch {throw new Error('无法连接在线房间服务，请稍后再试');}
+  const data=await response.json().catch(()=>null);
+  if(!response.ok || !data)
+    throw new Error(onlineErrors[data?.error]||(response.status===429?'今日用量已达限额，请稍后再试':
+      response.status===404?'房间已过期或不存在':response.status===409?'房间已经有两位玩家':'在线房间服务暂不可用'));
+  return data;
+}
+function sendOnlineSignal(room,message) {
+  if(room.socket?.readyState!==WebSocket.OPEN) throw new Error('在线配对服务已断开');
+  room.socket.send(JSON.stringify(message));
+}
+function armOnlineTimeout(room,peer,delay) {
+  clearTimeout(room.timer);
+  room.timer=setTimeout(()=>{
+    if(onlineRoom===room && !room.established && lan.peer===peer) failLanPeer(lanConnectionFailure(peer));
+  },delay);
+}
+function recoverOnlineConnection(status) {
+  const room=onlineRoom;
+  if(!room || room.established || room.mode!=='direct' || /版本/.test(status)) return false;
+  if(room.role==='host') void fallbackOnlineRoom(room);
+  else {
+    releaseLanPeer();
+    lan.phase='online';
+    lan.status='正在等待房主尝试中继…';
+  }
+  return true;
+}
+async function connectOnlinePeer(room,offer) {
+  const mode=room.mode;
+  const iceServers=mode==='relay'?
+    (await onlineRequest(`${room.path}/turn`,room,room.token)).iceServers:
+    [{urls:'stun:stun.cloudflare.com:3478'}];
+  if(onlineRoom!==room||room.mode!==mode||room.established) return;
+  if(!Array.isArray(iceServers)||!iceServers.length) throw new Error('直连未成功，线上中继暂不可用');
+  const {peer,epoch}=createLanPeer(room.role,room.code,{iceServers,iceTransportPolicy:mode==='relay'?'relay':'all'});
+  lan.phase='online';
+  lan.status=mode==='relay'?'正在尝试中继…':'正在尝试直连…';
+  armOnlineTimeout(room,peer,mode==='relay'?25000:14000);
+  if(offer) await peer.setRemoteDescription({type:'offer',sdp:offer});
+  if(onlineRoom!==room || lan.epoch!==epoch) return;
+  const description=room.role==='host'?await peer.createOffer():await peer.createAnswer();
+  await peer.setLocalDescription(description);
+  const local=await gatherLanDescription(peer,epoch);
+  if(onlineRoom!==room || lan.epoch!==epoch || room.mode!==mode) return;
+  if(mode==='relay'&&!/^a=candidate:[^\r\n]* typ relay(?:\s|$)/m.test(local.sdp))
+    throw new Error('无法获取中继地址，请稍后再试');
+  sendOnlineSignal(room,{type:description.type,mode,sdp:local.sdp});
+}
+async function fallbackOnlineRoom(room) {
+  if(onlineRoom!==room || room.mode==='relay' || room.established) return;
+  room.mode='relay';
+  clearTimeout(room.timer);
+  releaseLanPeer();
+  lan.phase='online';
+  lan.status='直连未成功，正在请求中继…';
+  try {
+    sendOnlineSignal(room,{type:'fallback'});
+    await connectOnlinePeer(room);
+  } catch(error) {
+    if(onlineRoom===room && !room.established) onlineFailure(error.message);
+  }
+}
+async function handleOnlineSignal(room,message) {
+  if(onlineRoom!==room||room.established) return;
+  if(message.type==='peer-left') {onlineFailure('好友已离开，请创建新房间');return;}
+  if(message.type==='fallback'&&room.role==='guest') {
+    if(room.mode!=='relay') {
+      room.mode='relay';
+      clearTimeout(room.timer);
+      releaseLanPeer();
+      lan.status='直连未成功，正在等待中继…';
+    }
+    return;
+  }
+  const mode=room.mode;
+  try {
+    if(message.type==='peer-ready'&&room.role==='host'&&!room.started) {
+      room.started=true;
+      await connectOnlinePeer(room);
+    } else if(message.mode===mode && typeof message.sdp==='string') {
+      if(message.type==='offer'&&room.role==='guest') await connectOnlinePeer(room,message.sdp);
+      else if(message.type==='answer'&&room.role==='host'&&lan.peer?.signalingState==='have-local-offer')
+        await lan.peer.setRemoteDescription({type:'answer',sdp:message.sdp});
+    }
+  } catch(error) {
+    if(onlineRoom!==room || room.established || room.mode!==mode) return;
+    if(mode==='direct') recoverOnlineConnection(error.message);
+    else onlineFailure(error.message);
+  }
+}
+async function beginOnlineRoom(role,code='') {
+  closeOnlineRoom();
+  const room=onlineRoom={role,code,mode:'direct',abort:new AbortController(),socket:null,timer:0,started:false,established:false};
+  lan.phase='online';
+  lan.status=role==='host'?'正在创建好友房间…':'正在加入好友房间…';
+  try {
+    const data=await onlineRequest(role==='host'?'/api/rooms':`/api/rooms/${code}/join`,room);
+    if(onlineRoom!==room) return;
+    if(!onlineRoomPattern.test(data.room) || typeof data.token!=='string') throw new Error('房间服务返回了无效房间');
+    room.code=data.room;
+    room.token=data.token;
+    room.path=`/api/rooms/${room.code}`;
+    const socketUrl=new URL(room.path+'/socket',location.origin);
+    socketUrl.protocol=location.protocol==='https:'?'wss:':'ws:';
+    socketUrl.searchParams.set('token',room.token);
+    const socket=room.socket=new WebSocket(socketUrl);
+    room.timer=setTimeout(()=>{
+      if(onlineRoom===room&&socket.readyState!==WebSocket.OPEN) onlineFailure('无法连接房间服务，请稍后再试');
+    },12000);
+    socket.addEventListener('open',()=>{
+      if(onlineRoom!==room) return;
+      clearTimeout(room.timer);
+      lan.status=role==='host'?'邀请已就绪，等待好友加入':'已加入，等待房主连接…';
+    });
+    socket.addEventListener('message',event=>{
+      if(typeof event.data!=='string'||event.data.length>40000) return;
+      let signal;
+      try {signal=JSON.parse(event.data);}
+      catch {return;}
+      if(signal) void handleOnlineSignal(room,signal);
+    });
+    socket.addEventListener('close',()=>{
+      if(onlineRoom===room&&!room.established) onlineFailure('在线房间已关闭，请重新创建或加入');
+    });
+  } catch(error) {
+    if(onlineRoom===room) onlineFailure(error.message);
+  }
+}
+function showOnlineRoomCode(invite=false) {
+  if(invite&&!onlineRoom?.code) return;
+  lan.dialog?.close();
+  const dialog=document.createElement('dialog'), form=document.createElement('form');
+  const label=document.createElement('label'), field=document.createElement('input'), status=document.createElement('p');
+  label.textContent=invite?'邀请链接':'输入好友的房间码';
+  field.type='text';
+  field.spellcheck=false;
+  field.autocomplete='off';
+  field.readOnly=invite;
+  field.maxLength=invite?300:14;
+  if(invite) field.value=location.origin+'/#room='+onlineRoom.code;
+  Object.assign(dialog.style,{width:'min(390px, 92vw)',background:colors.ink,color:colors.cream,
+    border:'2px solid '+colors.haze,padding:'16px',font:'14px '+chineseFont});
+  Object.assign(field.style,{display:'block',width:'100%',margin:'8px 0',padding:'8px',
+    background:colors.black,color:colors.cream,border:'1px solid '+colors.haze});
+  label.append(field);
+  const close=document.createElement('button'), submit=document.createElement('button');
+  close.type='button';close.textContent='关闭';submit.textContent=invite?'复制链接':'加入';
+  close.addEventListener('click',()=>dialog.close());
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(invite) {
+      field.select();
+      try {await navigator.clipboard.writeText(field.value);status.textContent='链接已复制';}
+      catch {status.textContent='链接已选中，可以手动复制';}
+    } else {
+      const code=field.value.replace(/\s|-/g,'').toUpperCase();
+      if(!onlineRoomPattern.test(code)) {status.textContent='请输入十位房间码';return;}
+      dialog.close();
+      void beginOnlineRoom('guest',code);
+    }
+  });
+  status.setAttribute('role','status');
+  lan.dialog=dialog;
+  dialog.addEventListener('keydown',event=>event.stopPropagation());
+  dialog.addEventListener('close',()=>{if(lan.dialog===dialog) lan.dialog=null;dialog.remove();});
+  form.append(label,close,submit,status);dialog.append(form);document.body.append(dialog);dialog.showModal();
+  field.focus();
+  if(invite) field.select();
+}
+
 function drawLanRoom() {
   const center=width/2, panelWidth=Math.min(316,width-24), x=Math.round(center-panelWidth/2);
   const top=Math.max(12,Math.round(height/2-139)), buttonX=x+13, innerWidth=panelWidth-26;
   const half=Math.floor((innerWidth-6)/2), second=buttonX+half+6, thin=panelWidth<246;
-  const status=lan.status||{
+  const online=lanEntryMode==='online';
+  const status=lan.status||(online?'创建私密房间，或用好友的房间码加入':'')||{
     idle:'两台设备使用同一版本并连接同一局域网',gathering:'正在收集局域网地址…',
     invite:'将邀请发给客机，再填入客机回执',answer:'将你的回执发回房主，等待对方粘贴',
     connecting:lan.relay?'正在通过中继连接…':'正在建立直连…'
@@ -3560,8 +3763,9 @@ function drawLanRoom() {
   rect(x,top,panelWidth,242,colors.ink);
   rect(x+1,top+1,panelWidth-2,240,pattern(colors.plum,7));
   corners(x,top,panelWidth-1,241,9,colors.haze);
-  type('局域网联机',center,top+25,16,colors.cream,'display','center');
-  type('双人飞行',center,top+42,9,colors.gold,'mono','center');
+  type(online?'邀请好友':'局域网联机',center,top+25,16,colors.cream,'display','center');
+  const subtitle=onlineRoom?.established?(onlineRoom.mode==='relay'?'已通过中继连接':'已直连'):'双人飞行';
+  type(subtitle,center,top+42,9,colors.gold,'mono','center');
   if(lan.phase==='room') {
     if(lan.role==='host') {
       canvasButton('lanPve','合作任务',buttonX,top+55,half,23,lan.mode==='pve',11);
@@ -3586,9 +3790,12 @@ function drawLanRoom() {
       type(statusChars.slice(maxChars).join(''),center,top+77,statusSize,colors.cream,'mono','center');
     if(lan.phase==='idle'||lan.phase==='error') {
       canvasButton('lanCreate','创建房间',buttonX,top+88,half,27,true,11);
-      canvasButton('lanJoin','加入房间',second,top+88,half,27,false,11);
-      type('房主发送邀请 · 客机发送回执',center,top+136,thin?8:10,colors.gold,'mono','center');
-      canvasButton('lanRelay',lan.relay?'中继已启用 · 设置':'中继设置',buttonX,top+151,innerWidth,22,false,10);
+      canvasButton('lanJoin',online?'输入房间码':'加入房间',second,top+88,half,27,false,11);
+      type(online?'优先直连 · 失败时自动尝试中继':'房主发送邀请 · 客机发送回执',center,top+136,thin?8:10,colors.gold,'mono','center');
+      if(!online) canvasButton('lanRelay',lan.relay?'中继已启用 · 设置':'中继设置',buttonX,top+151,innerWidth,22,false,10);
+    } else if(lan.phase==='online'&&onlineRoom?.role==='host'&&onlineRoom.code) {
+      type(onlineRoom.code,center,top+105,16,colors.gold,'mono','center');
+      canvasButton('onlineInvite','复制邀请链接',buttonX,top+118,innerWidth,24,true,11);
     } else if(lan.phase==='invite') {
       canvasButton('lanInvite','查看邀请',buttonX,top+88,half,27,false,11);
       canvasButton('lanConfirm','粘贴回执',second,top+88,half,27,true,11);
@@ -3621,8 +3828,12 @@ function handleLanRoomKey(event) {
 function handleLanRoomPointer(point) {
   const hit=key=>inside(point,hitBoxes[key]);
   if(hit('lanBack')) leaveLanScreen();
-  else if(hit('lanCreate')) void createLanInvitation().then(()=>{if(lan.phase==='invite') showLanCode('invite');});
-  else if(hit('lanJoin')) showLanCode('join');
+  else if(hit('lanCreate')) {
+    if(lanEntryMode==='online') void beginOnlineRoom('host');
+    else void createLanInvitation().then(()=>{if(lan.phase==='invite') showLanCode('invite');});
+  }
+  else if(hit('lanJoin')) {if(lanEntryMode==='online') showOnlineRoomCode();else showLanCode('join');}
+  else if(hit('onlineInvite')) showOnlineRoomCode(true);
   else if(hit('lanInvite')) showLanCode('invite');
   else if(hit('lanConfirm')) showLanCode('confirm');
   else if(hit('lanResponse')) showLanCode('response');
@@ -3965,7 +4176,8 @@ function drawLanHud(s,cam) {
   const x=width*.5, y=screenInsets[0]+52;
   const remain=match.mode==='pvp'?' · '+Math.max(0,Math.ceil(lanMatchLimit-match.clock))+' 秒':
     mission.campaign?' · '+(mission.campaign.wave+1)+'/'+mission.config.waves.length+' 波':'';
-  const tag=(match.detached?'电脑僚机':match.mode==='pvp'?'局域网 · 对决':'局域网 · 合作')+remain;
+  const link=lanEntryMode==='online'?'联机':'局域网';
+  const tag=(match.detached?'电脑僚机':link+(match.mode==='pvp'?' · 对决':' · 合作'))+remain;
   const size=width<295?8:9, span=width<295?86:126;
   rect(x-span/2,y-10,span,13,colors.ink);
   type(tag,x,y,size,colors.cream,'mono','center');
@@ -4129,11 +4341,20 @@ function closeHangar() {
   entryScreen=hangarReturn;
   hangarDrag=null;
 }
-function openLanEntry() {
+function openLanEntry(mode='offline') {
   if(!ready || flying || entryScreen!=='title') return;
   soloSelection={mission:selectedMission,aircraft:selectedAircraft};
   entryScreen='lan';
+  lanEntryMode=mode;
   openLanRoom(selectedAircraft);
+}
+function openOnlineEntry(code='') {
+  const localOrigin=['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+  if(location.origin!==onlineOrigin&&!localOrigin) {
+    location.assign(onlineOrigin+'/'+(code?'#room='+code:''));return;
+  }
+  openLanEntry('online');
+  if(code && entryScreen==='lan') void beginOnlineRoom('guest',code);
 }
 function exitLanEntry() {
   if(soloSelection) {
@@ -4236,6 +4457,7 @@ glass.addEventListener('pointerdown',event=>{
     else if(inside(p,hitBoxes.resumeCheckpoint)) resumeCheckpoint();
     else if(inside(p,hitBoxes.controls)) entryScreen='controls';
     else if(inside(p,hitBoxes.openLan)) openLanEntry();
+    else if(inside(p,hitBoxes.openOnline)) openOnlineEntry();
     else if(inside(p,hitBoxes.missionBrief)) openMissionBriefing();
     else {
       const choice=hitBoxes.missionChoices?.find(entry=>inside(p,entry.slot));
@@ -4443,6 +4665,11 @@ async function boot() {
     renderJet(warmCamera,warm,0,1);
     await paintFrame();
     progress=1;ready=true;
+    const roomCode=new URLSearchParams(location.hash.slice(1)).get('room');
+    if(onlineRoomPattern.test(roomCode||'')) {
+      if(location.protocol!=='file:') history.replaceState(null,'',location.pathname+location.search);
+      openOnlineEntry(roomCode);
+    }
   } catch(error) {
     console.error(error);
     failure='湖区加载失败，请刷新页面';

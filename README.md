@@ -7,6 +7,8 @@
 <p align="center"><strong>秋日湖区的像素飞行游戏</strong></p>
 
 <p align="center">
+  <a href="https://patrol.etta.top/"><strong>直接开始游戏</strong></a>
+  &nbsp;·&nbsp;
   <a href="https://github.com/Laser1209/patrol/raw/refs/heads/main/index.html"><strong>获取游戏 HTML</strong></a>
   &nbsp;·&nbsp;
   <a href="#怎么飞">怎么飞</a>
@@ -54,15 +56,21 @@
 
 ### 两个人怎么飞
 
-两台设备打开同一版本的 `index.html`，接入同一局域网。联机采用浏览器直连，连接是否可用取决于网络与浏览器设置。
+#### 在线邀请好友
 
-1. **房主**在标题页选 **局域网 → 创建房间**，复制邀请文本发给朋友。
-2. **加入方**选 **局域网 → 加入房间**，粘贴邀请，再把生成的回执发回房主。
+打开 [PATROL 在线版](https://patrol.etta.top/)，选择 **邀请好友 → 创建房间**。把邀请链接发给朋友，好友点开就会加入，也可以在标题页输入十位房间码。两人准备后房主出击。游戏优先尝试直连，直连失败后自动尝试中继，房间会显示当前连接方式。
+
+#### 离线局域网
+
+两台设备打开同一版本的 `index.html`，接入允许设备互通的同一局域网。
+
+1. **房主**在标题页选 **离线局域网 → 创建房间**，复制邀请文本发给朋友。
+2. **加入方**选 **离线局域网 → 加入房间**，粘贴邀请，再把生成的回执发回房主。
 3. **房主**点 **粘贴回执**。连上后，房主选好模式和场地，双方各自在机库选机并点击 **准备**，最后由房主点 **确认出击**。
 
 合作模式共享任务进度和积分，队友掉线时可由电脑僚机接替。对抗模式是南岸空域的 1 对 1。联机菜单只在本机打开，联机对局也不会覆盖单机存档。
 
-**同一个热点还是连不上？** 确认房主已经粘贴本次回执。若仍提示直连失败，试用允许设备互通的家庭 Wi‑Fi。有可用的 TURN 服务时，两端可在 **中继设置** 填入各自的服务器凭据，启用后重新交换邀请和回执。中继需要能访问该服务器，游戏没有内置中继服务。
+**同一个热点还是连不上？** 两台设备能上网的话，可以改用 **邀请好友**，游戏会自动尝试备用线路。只有本地网络时，请使用允许设备互通的 Wi‑Fi。
 
 <p align="center">
   <img src="docs/media/lan-room.png" alt="PATROL 局域网房间，显示合作任务、一对一对抗、机库选机与准备按钮" width="720">
@@ -74,14 +82,16 @@
 
 [Download the HTML file](https://github.com/Laser1209/patrol/raw/refs/heads/main/index.html) and open it in a browser. Choose **新任务** (New Mission), pick a sortie, read the briefing, and choose a plane in the hangar. Select **确认出击** (Take Off) to fly or **继续上次** (Continue) on the title screen to resume a saved solo sortie. Press `U` to cycle wingman orders when the AI wingman is enabled.
 
-### Two-player LAN
+### Two-player multiplayer
 
-Play either of two co-op sorties or fly a 150-second one-on-one duel over the south shore. Both devices should open the same game version on the same local network.
+Play either of two co-op sorties or fly a 150-second one-on-one duel over the south shore. Open [PATROL online](https://patrol.etta.top/), choose **邀请好友** (Invite a Friend) and share the room link. Your friend can open the link or enter the ten-character room code. The game tries a direct connection first and automatically tries a relay if needed.
 
-1. The host chooses **局域网 → 创建房间** (LAN → Create Room) and sends the invitation text.
+For offline LAN play, both devices should open the same game version on the same local network.
+
+1. The host chooses **离线局域网 → 创建房间** (Offline LAN → Create Room) and sends the invitation text.
 2. The other player chooses **加入房间** (Join Room), pastes the invitation, and sends back the reply text.
 3. The host pastes the reply and chooses a mode and map. Both players pick a plane and mark themselves ready, then the host starts the sortie.
 
 In co-op, both players share mission progress and score. An AI wingman can take over if the other player disconnects. LAN matches leave solo saves intact.
 
-If a shared hotspot blocks direct connections, try a network that allows device-to-device traffic. If you have access to a TURN service, both players can configure it under **中继设置** (Relay Settings) before exchanging new invitation and reply texts. The game does not include a hosted relay.
+If a shared hotspot blocks offline LAN connections and both devices can reach the internet, use **邀请好友** (Invite a Friend) to try the automatic relay.
