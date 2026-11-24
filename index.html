@@ -21,7 +21,7 @@ const colors = {
   ink:'#20182d', black:'#302039', plum:'#49304e', violet:'#654263',
   mauve:'#966079', haze:'#bc7e88', peach:'#edaa93', copper:'#b76b56',
   ochre:'#dd975b', gold:'#f8c685', cream:'#fff0c7', hot:'#fffbe6',
-  slate:'#504b69', indigo:'#373857', red:'#ff927a'
+  slate:'#504b69', indigo:'#373857', red:'#ff927a', olive:'#777859'
 };
 const bayer = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 const world = document.querySelector('#world');
@@ -330,6 +330,8 @@ uniform mat3 attitude,view;
 uniform vec2 resolution,control;
 uniform vec2 screenOffset;
 uniform float lens,thrust;
+uniform vec2 propPivots;
+uniform float propAngle;
 out vec3 worldNormal;
 out float viewDepth;
 flat out float paint,part;
@@ -343,6 +345,13 @@ void main(){
     n.yz=hinge*n.yz;
   }
   if(part==3.) p.z=-2.72+(p.z+2.72)*(.13+thrust*1.36);
+  if(part>=4.) {
+    vec2 hub=vec2(sign(p.x)*(part>=6.?propPivots.y:propPivots.x),.035);
+    float angle=mod(part,2.)==0.?propAngle:-propAngle;
+    mat2 spin=mat2(cos(angle),sin(angle),-sin(angle),cos(angle));
+    p.xy=hub+spin*(p.xy-hub);
+    n.xy=spin*n.xy;
+  }
   vec3 camera=transpose(view)*(jetPosition+attitude*p-eye);
   worldNormal=attitude*n;
   viewDepth=camera.z;
@@ -377,6 +386,7 @@ void main(){
     else if(paint==12.) color=red;
     else if(paint==13.) color=cream;
     else if(paint==14.) color=ramp(indigo,violet,copper,gold,light);
+    else if(paint==15.) color=ramp(plum,slate,olive,gold,light);
     else color=ramp(slate,mauve,peach,cream,light);
     if(paint!=4. && paint<12. && dot(n,normalize(sun-forward))>.84) color=paint==3.?peach:hot;
   }
@@ -402,7 +412,10 @@ const aircraftModels=[
   {name:'F-22', nose:3.89, hull:.98, wing:[1.03,-.73,-1.51,-1.83,3.70], fins:[.81,.58,1.31], engines:2, square:true, stabilizers:true, paint:2, trim:9},
   {name:'歼-11', nose:4.15, hull:.77, wing:[1.14,-1.00,-1.56,-1.49,3.62], fins:[.95,.18,1.47], engines:2, stabilizers:true, paint:9, trim:1},
   {name:'歼-16', nose:4.14, hull:.83, wing:[1.23,-1.06,-1.72,-1.52,3.76], fins:[1.02,.16,1.55], engines:2, tandem:true, stabilizers:true, paint:8, trim:5},
-  {name:'歼-20', nose:4.63, hull:.88, wing:[.68,-1.29,-1.71,-2.28,3.66], fins:[.88,.57,1.30], engines:2, canard:true, square:true, paint:9, trim:2}
+  {name:'歼-20', nose:4.63, hull:.88, wing:[.68,-1.29,-1.71,-2.28,3.66], fins:[.88,.57,1.30], engines:2, canard:true, paint:9, trim:2},
+  {name:'B-52',role:'bomber',nose:6.3,hull:.98,wing:[1.48,-2.32,-2.88,-.65,6.7],fins:[0,0,2.23],engines:8,paint:9,trim:2,pods:'twin'},
+  {name:'图-95',role:'bomber',nose:6.2,hull:.93,wing:[1.33,-2.38,-2.88,-1.06,6.48],fins:[0,0,2.12],engines:4,paint:2,trim:9,pods:'prop'},
+  {name:'轰-6',role:'bomber',nose:5.85,hull:1.03,wing:[1.23,-2.04,-2.62,-.87,5.95],fins:[0,0,2.08],engines:2,paint:2,trim:8,pods:'root'}
 ];
 let selectedAircraft=0;
 const selectedModel=()=>aircraftModels[selectedAircraft];
@@ -412,7 +425,9 @@ const loadouts=[
   ['米格系 · 六十年代',8,.15,23,2,3,.92], ['鹰系 · 七十年代',8,.135,26,3,4,.73],
   ['隼系 · 七十年代',9,.14,25,3,4,.68], ['大黄蜂系 · 八十年代',8,.13,27,4,5,.57],
   ['猛禽系 · 二〇年代初',7,.105,29,5,5,.36], ['侧卫系 · 九十年代',8,.125,26,3,5,.63],
-  ['侧卫系 · 一〇年代',7,.11,28,5,6,.42], ['威龙系 · 一〇年代',7,.11,30,5,6,.34]
+  ['侧卫系 · 一〇年代',7,.11,28,5,6,.42], ['威龙系 · 一〇年代',7,.11,30,5,6,.34],
+  ['美系 · 重型机',5,.15,24,3,6,.63], ['苏系 · 重型机',5,.16,24,3,6,.69],
+  ['中系 · 重型机',6,.14,27,4,6,.56]
 ].map(([era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime])=>
   ({era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime}));
 const selectedLoadout=()=>loadouts[selectedAircraft];
@@ -421,144 +436,314 @@ const projectileFamilies=[
   {name:'流萤',style:'弧线曳光',duration:1.04,arc:8,glow:colors.peach},
   {name:'弦月',style:'跃升曳光',duration:1.12,arc:17,glow:colors.cream}
 ];
-const projectileAssignment=[0,1,0,0,1,1,2,0,1,2];
+const projectileAssignment=[0,1,0,0,1,1,2,0,1,2,0,1,2];
 const selectedProjectile=()=>projectileFamilies[projectileAssignment[selectedAircraft]];
 const cannonTraceTime=.34;
 
-function jetGeometry(model) {
+function jetGeometry(model,detailed) {
   const data=[];
   function tri(a,b,c,paint=0,part=0) {
-    const normal=unit(cross(sub(b,a),sub(c,a)));
-    for(const p of [a,b,c]) data.push(...p,...normal,paint,part);
+    const surface=cross(sub(b,a),sub(c,a));
+    if(length(surface)<1e-7) return;
+    const normal=unit(surface);
+    for(const point of [a,b,c]) data.push(...point,...normal,paint,part);
   }
   function quad(a,b,c,d,paint,part) {
-    tri(a,b,c,paint,part); tri(a,c,d,paint,part);
+    tri(a,b,c,paint,part);
+    tri(a,c,d,paint,part);
   }
-  const [leading,tipLead,tipTrail,trailing,span]=model.wing;
+  function tube(at,stations,count,paint) {
+    const rings=stations.map(([z,rx,ry,cy])=>Array.from({length:count},(_,index)=>{
+      const angle=(index+(count===4?.5:0))*2*Math.PI/count;
+      return [at+Math.cos(angle)*rx,cy+Math.sin(angle)*ry,z];
+    }));
+    const spacing=detailed?1:2;
+    for(let previous=0;previous<rings.length-1;previous+=spacing) {
+      const station=Math.min(rings.length-1,previous+spacing);
+      const front=rings[previous], rear=rings[station];
+      for(let segment=0;segment<count;segment++) {
+        const next=(segment+1)%count;
+        quad(front[segment],rear[segment],rear[next],front[next],
+          typeof paint==='function'?paint(station,segment):paint);
+      }
+    }
+    return rings;
+  }
+  const bomber=model.role==='bomber';
+  const flanker=['苏-27','苏-34','歼-11','歼-16'].includes(model.name);
+  const angular=model.square;
+  const enginesWide=flanker?.91:angular?.88:model.name==='F-15'?.83:.77;
+  const rearZ=bomber?-5.6:-2.64;
+  const [rootLead,tipLead,tipTrail,rootTrail,span]=model.wing;
+  const rootX=model.hull*.73;
+  const crossSections=detailed?(angular?10:14):4;
+  const noseWidth=model.intake?.34:model.duckbill?.49:bomber?.21:.045;
+  const noseTop=model.intake?.27:model.duckbill?.12:bomber?.13:.035;
+  const shoulderTop=bomber?.68:flanker?.49:angular?.44:.51;
+  const noseStart=model.duckbill?model.nose-.49:model.nose-.43;
+  const bodyStations=bomber?[
+    [model.nose,noseWidth,noseTop,-.12],[noseStart,.67,.42,-.43],[3.88,model.hull,.62,-.59],
+    [2.03,model.hull*1.06,.65,-.64],[.15,model.hull*1.07,.68,-.67],
+    [-2.60,model.hull,.58,-.57],[-4.16,model.hull*.74,.43,-.40],[rearZ,.18,.22,-.16]
+  ]:[
+    [model.nose,noseWidth,noseTop,model.intake?-.28:-.065],
+    [noseStart,model.intake?.42:model.duckbill?.65:.23,model.intake?.35:.18,-.20],
+    [model.nose-.98,model.intake?.49:model.duckbill?.79:.41,.32,-.28],
+    [1.91,model.hull*(model.duckbill?.96:.69),shoulderTop*.89,-.36],
+    [.78,model.hull,shoulderTop,-.46],[-.68,model.hull*(flanker?1.14:1.07),shoulderTop*.93,-.47],
+    [-1.69,model.hull*1.04,.39,-.41],[rearZ,model.hull*(model.engines===1?.77:.90),.234,-.32]
+  ];
+  const hullValues=(index,t)=>{
+    const a=bodyStations[index], b=bodyStations[index+1];
+    const before=bodyStations[Math.max(0,index-1)], after=bodyStations[Math.min(index+2,bodyStations.length-1)];
+    // Local cubic interpolation adds curvature to the hull while preserving each cross section.
+    return a.map((value,coordinate)=>{
+      if(coordinate===0) return mix(value,b[0],t);
+      const end=b[coordinate], firstSlope=(end-before[coordinate])*.5, lastSlope=(after[coordinate]-value)*.5;
+      const cubic=(1-smooth(t))*value+smooth(t)*end+t*(1-t)*((1-t)*firstSlope-t*lastSlope);
+      return clamp(cubic,Math.min(value,end),Math.max(value,end));
+    });
+  };
+  const ringPositions=bodyStations.slice(0,-1).flatMap((_,index)=>
+    Array.from({length:detailed?4:1},(_,step)=>hullValues(index,step/(detailed?4:1))));
+  ringPositions.push(bodyStations[bodyStations.length-1]);
+  function deckAt(z) {
+    const index=bodyStations.findIndex(station=>station[0]<z);
+    if(index<1) return bodyStations[index===0?0:bodyStations.length-1][2];
+    const start=bodyStations[index-1][0], end=bodyStations[index][0];
+    return hullValues(index-1,(z-start)/(end-start))[2];
+  }
+  const wingBow=flanker?.76:model.strakes?.83:angular?.27:model.intake?.14:bomber?.24:.42;
   for(const side of [-1,1]) {
     const p=(x,y,z)=>[side*x,y,z];
     const face=(a,b,c,paint,part)=>side>0?tri(a,c,b,paint,part):tri(a,b,c,paint,part);
     const plate=(a,b,c,d,paint,part)=>{face(a,b,c,paint,part);face(a,c,d,paint,part);};
-    const section=(z,halfWidth,top,bottom,waist=0)=>[
-      p(0,top,z),p(halfWidth*.57,top*.78+waist*.22,z),p(halfWidth,waist,z),
-      p(halfWidth*.68,bottom*.72+waist*.28,z),p(0,bottom,z)
-    ];
-    const blunt=model.intake?.22:model.duckbill?.41:.035;
-    const fuselage=[
-      section(model.nose,blunt,model.intake?.27:.10,-.12,.035),
-      section(model.nose-.31,blunt+.15,.21,-.22),
-      section(2.03,model.hull*.61,.41,-.34),
-      section(.97,model.hull,.51,-.47,.045),
-      section(-.75,model.hull*1.06,.48,-.46,.015),
-      section(-2.55,model.hull*.92,.25,-.33)
-    ];
+    const hullRing=([z,w,top,bottom])=>Array.from({length:crossSections+1},(_,index)=>{
+      const angle=index*Math.PI/crossSections;
+      const sine=index===0||index===crossSections?0:Math.sin(angle), cosine=Math.cos(angle);
+      const cheek=angular?Math.pow(sine,.60):model.duckbill?Math.pow(sine,.69):Math.pow(sine,.93);
+      const height=cosine>=0?top*Math.pow(cosine,angular?.66:1):(-bottom)*cosine;
+      return p(w*cheek,height,z);
+    });
+    const fuselage=ringPositions.map(hullRing);
     for(let i=1;i<fuselage.length;i++) {
       const front=fuselage[i-1], rear=fuselage[i];
-      for(let j=0;j<4;j++) {
-        const paint=i===1?model.trim:j===1?11:j===3?10:model.paint;
+      for(let j=0;j<crossSections;j++) {
+        const shoulder=j/crossSections;
+        const radome=ringPositions[i][0]>model.nose-(bomber?.68:.85);
+        const paint=radome?model.trim:shoulder>.63?10:shoulder>.41&&angular?9:model.paint;
         plate(front[j],rear[j],rear[j+1],front[j+1],paint);
       }
     }
-    const ringFace=fuselage[0], rearFace=fuselage[fuselage.length-1];
-    for(let j=0;j<4;j++) {
-      face(ringFace[j],ringFace[j+1],[0,.01,model.nose+.012],model.intake?4:model.trim);
-      face(rearFace[j+1],rearFace[j],[0,0,-2.56],4);
+    const front=fuselage[0], stern=fuselage[fuselage.length-1];
+    for(let j=0;j<crossSections;j++) {
+      face(stern[j+1],stern[j],[0,0,rearZ-.025],model.paint);
+      if(!model.intake) face(front[j],front[j+1],[0,.018,model.nose+.014],model.trim);
+      else {
+        const lipA=add(mul(front[j],.78),[0,0,model.nose*.22-.022]);
+        const lipB=add(mul(front[j+1],.78),[0,0,model.nose*.22-.022]);
+        plate(front[j],front[j+1],lipB,lipA,14);
+        face(lipA,lipB,[0,0,model.nose-.27],4);
+        const coneA=add(mul(lipA,.55),[0,0,lipA[2]*.45-.06]);
+        const coneB=add(mul(lipB,.55),[0,0,lipB[2]*.45-.06]);
+        face(coneA,coneB,[0,0,model.nose+.27],15);
+      }
     }
-    if(model.intake) face(p(.11,.17,model.nose+.028),p(.18,-.03,model.nose+.04),[0,.02,model.nose+.25],model.paint);
-    // Two slightly proud strips break up the fuselage near the canopy and rear deck.
-    const panel=(a,b,c,d)=>plate(a,b,c,d,10);
-    panel(p(model.hull*.70,.20,1.83),p(model.hull*.89,.235,.47),
-      p(model.hull*.90,.21,.47),p(model.hull*.71,.173,1.83));
-    panel(p(model.hull*.48,.345,-1.48),p(model.hull*.48,.294,-2.07),
-      p(model.hull*.57,.272,-2.07),p(model.hull*.57,.316,-1.48));
-    const root=p(model.hull*.72,.02,leading), rootBack=p(model.hull*.72,.02,trailing);
-    const tip=p(span,.055,tipLead), tipBack=p(span*.98,.03,tipTrail);
-    const band=blend(root,tip,.70), bandBack=blend(rootBack,tipBack,.70);
-    const bandEnd=blend(root,tip,.79), bandEndBack=blend(rootBack,tipBack,.79);
-    plate(rootBack,bandBack,band,root,model.paint);
-    plate(bandBack,bandEndBack,bandEnd,band,5);
-    plate(bandEndBack,tipBack,tip,bandEnd,model.trim);
-    const wingBottom=v=>add(v,[0,-.10,0]);
-    plate(root,tip,wingBottom(tip),wingBottom(root),11);
-    plate(tip,tipBack,wingBottom(tipBack),wingBottom(tip),10);
-    plate(wingBottom(root),wingBottom(tip),wingBottom(tipBack),wingBottom(rootBack),model.paint);
-    const wingLineA=blend(blend(root,rootBack,.73),blend(tip,tipBack,.73),.30);
-    const wingLineB=blend(blend(root,rootBack,.73),blend(tip,tipBack,.73),.90);
-    panel(add(wingLineA,[0,.011,0]),add(wingLineB,[0,.011,0]),
-      add(wingLineB,[0,.011,-.038]),add(wingLineA,[0,.011,-.038]));
-    plate(add(tip,[0,.016,0]),add(blend(tip,tipBack,.27),[0,.018,0]),
-      add(blend(blend(tip,tipBack,.27),rootBack,.09),[0,.018,0]),
-      add(blend(tip,root,.09),[0,.016,0]),side<0?12:13);
-    plate(p(model.hull+.13,.024,trailing-.42),p(span*.85,.03,tipTrail-.24),bandBack,rootBack,4,side<0?1:2);
-    if(model.stabilizers) plate(p(model.hull,.08,-1.46),p(model.hull,.08,-2.74),
-      p(span*.52,.11,-2.96),p(span*.51,.11,-2.40),model.trim);
-    if(model.canard) plate(p(model.hull*.72,.12,2.09),p(model.hull*.75,.12,1.40),
-      p(span*.56,.16,1.14),p(span*.51,.16,1.55),model.trim);
-    if(model.strakes) face(p(model.hull*.54,.15,2.48),root,tip,model.trim);
-    if(model.chin) face(p(.52,-.48,1.12),p(.43,-.19,1.42),[0,-.48,1.48],4);
-    if(model.engines===2) {
-      const throat=p(model.hull*.91,-.25,1.15);
-      const outer=p(model.hull*1.20,.085,1.09);
-      const intakeTop=p(model.hull*.61,.17,1.24);
-      const rearTop=p(model.hull*.85,.19,-2.36);
-      plate(outer,p(model.hull*1.05,.03,-2.39),rearTop,intakeTop,model.paint);
-      plate(throat,p(model.hull*.91,-.33,-2.36),p(model.hull*1.05,.03,-2.39),outer,10);
-      face(throat,outer,intakeTop,4);
-      face(add(throat,[0,.07,.012]),add(outer,[-side*.12,-.022,.013]),
-        add(intakeTop,[side*.09,-.012,.017]),10);
+    const wingPoint=(spanFraction,chord,sideOfWing)=>{
+      const bow=Math.sin(Math.PI*spanFraction);
+      const leading=mix(rootLead,tipLead,spanFraction)+wingBow*bow;
+      const trailing=mix(rootTrail,tipTrail,spanFraction)-.13*bow;
+      const camber=(bomber?.18:.13)*Math.sin(Math.PI*chord)*(1-.66*spanFraction);
+      const y=mix(.035,bomber?-.12:.075,spanFraction)+sideOfWing*(camber+.024*(1-spanFraction));
+      return p(mix(rootX,span,spanFraction),y,mix(leading,trailing,chord));
+    };
+    const ribs=detailed?[0,.12,.23,.38,.54,.68,.73,.78,.90,1]:[0,.68,.78,1];
+    const chord=detailed?[0,.06,.18,.36,.55,.72,.85,1]:[0,1];
+    for(let rib=1;rib<ribs.length;rib++) {
+      const start=ribs[rib-1], end=ribs[rib];
+      const accent=start>=.68&&end<=.78;
+      for(let strip=1;strip<chord.length;strip++) {
+        const fore=chord[strip-1], aft=chord[strip];
+        const part=fore>=.72 && start>=.38 && end<=.9?(side<0?1:2):0;
+        const paint=accent?5:part?model.trim:strip===1?11:model.paint;
+        const a=wingPoint(start,fore,1), b=wingPoint(end,fore,1);
+        const c=wingPoint(end,aft,1), d=wingPoint(start,aft,1);
+        plate(d,c,b,a,paint,part);
+        plate(wingPoint(start,fore,-1),wingPoint(end,fore,-1),wingPoint(end,aft,-1),wingPoint(start,aft,-1),10,part);
+        if(rib===ribs.length-1) plate(b,c,wingPoint(end,aft,-1),wingPoint(end,fore,-1),model.trim);
+      }
+      for(const edge of [0,1]) plate(wingPoint(start,edge,1),wingPoint(start,edge,-1),
+        wingPoint(end,edge,-1),wingPoint(end,edge,1),edge?10:11);
+    }
+    if(detailed) {
+      for(const seam of [.22,.49,.82]) {
+        const from=wingPoint(seam,.15,1), end=wingPoint(seam,.67,1);
+        const raised=(point,offset)=>add(point,[side*offset,.013,0]);
+        plate(raised(from,0),raised(end,0),raised(end,.018),raised(from,.018),10);
+      }
+      const glow=wingPoint(.985,.24,1);
+      face(add(glow,[0,.035,.072]),add(glow,[side*.046,.019,-.06]),
+        add(glow,[-side*.064,.019,-.06]),side<0?12:13);
+    }
+    function foil(outline,thickness,vertical,paint) {
+      const center=mul(outline.reduce((sum,point)=>add(sum,point),[0,0,0]),.25);
+      const raise=vertical?[side*thickness,0,0]:[0,thickness,0];
+      for(let i=0;i<outline.length;i++) {
+        const a=outline[i], b=outline[(i+1)%outline.length];
+        const top=add(center,raise), lower=sub(center,raise);
+        face(vertical?a:b,vertical?b:a,top,paint);
+        face(vertical?b:a,vertical?a:b,lower,10);
+      }
+    }
+    if(model.stabilizers||bomber) {
+      const tailScale=bomber?1.6:1;
+      const root=bomber?-3.80:-1.77;
+      foil([p(model.hull*.6,.11,root),p(span*.47,.15,root-.96*tailScale),
+        p(span*.43,.115,root-1.5*tailScale),p(model.hull*.64,.08,root-1.08*tailScale)],
+        bomber?.11:.075,false,model.trim);
+    }
+    if(model.canard) {
+      const hinge=model.duckbill?2.26:1.93;
+      foil([p(model.hull*.68,.16,hinge+.2),p(span*(model.duckbill?.40:.49),.13,hinge-.25),
+        p(span*.43,.12,hinge-.47),p(model.hull*.79,.11,hinge-.65)],.065,false,model.trim);
+    }
+    if(model.strakes||flanker||angular) {
+      const forward=model.strakes?2.67:flanker?2.49:1.94;
+      const leading=wingPoint(.31,0,1), joint=wingPoint(.04,.27,1);
+      plate(p(model.hull*.52,.24,forward),p(model.hull*.94,.19,forward-.63),leading,joint,model.trim);
     }
     const [finRoot,cant,finHeight]=model.fins;
-    if(finRoot>0 || side===1) {
-      const tailFront=p(finRoot,.13,-1.15), tailTip=p(finRoot+cant,finHeight,-1.86);
-      const tailEnd=p(finRoot+cant,finHeight,-2.26), tailBase=p(finRoot,.12,-2.66);
-      const spine=add(blend(tailFront,tailBase,.54),[side*.09,.08,0]);
-      face(tailFront,tailTip,spine,model.trim);
-      plate(spine,tailTip,tailEnd,tailBase,model.paint);
-      const stripe=blend(tailBase,tailEnd,.70), edge=blend(tailFront,tailTip,.70);
-      const nudged=v=>add(v,[side*.012,0,0]);
-      plate(nudged(stripe),nudged(edge),nudged(blend(tailFront,tailTip,.82)),nudged(blend(tailBase,tailEnd,.82)),5);
+    if(finRoot>0||side===1) {
+      const foot=bomber?-3.7:model.intake?-1.06:angular?-1.38:-1.24;
+      const sweep=bomber?1:angular?.52:.66;
+      const a=p(finRoot,bomber?.33:.18,foot), b=p(finRoot+cant,finHeight,foot-sweep);
+      const c=p(finRoot+cant,finHeight-.03,foot-sweep-(bomber?.62:angular?.69:.41)),
+        d=p(finRoot,bomber?.27:.11,foot-(bomber?1.80:1.47));
+      foil([a,b,c,d],bomber?.17:.097,true,model.trim);
+      if(detailed) {
+        const widthSide=side*.067;
+        const strip=(first,last,t)=>add(blend(first,last,t),[widthSide,0,0]);
+        plate(strip(a,b,.59),strip(d,c,.59),strip(d,c,.68),strip(a,b,.68),5);
+        const back=(point)=>add(point,[side*.038,0,-.04]);
+        plate(back(blend(a,d,.73)),back(blend(b,c,.74)),back(blend(b,c,.79)),back(blend(a,d,.79)),10);
+      }
     }
-    const glassFront=[0,.49,model.duckbill?2.13:1.64], glassTop=[0,.84,model.duckbill?1.21:.79],
-      glassBack=[0,.37,model.tandem?-1.15:model.duckbill?-.54:-.42];
-    const glassSide=p(model.duckbill?.58:model.hull*.56,.34,model.tandem?-.01:.37);
-    const brow=add(blend(glassFront,glassTop,.62),[side*model.hull*.29,.024,-.045]);
-    const backRim=add(blend(glassTop,glassBack,.42),[side*model.hull*.30,.006,-.075]);
-    face(glassFront,glassTop,brow,3);
-    plate(glassTop,glassBack,backRim,brow,3);
-    face(glassFront,brow,glassSide,3);
-    plate(brow,backRim,glassBack,glassSide,3);
-    const frameA=add(blend(brow,backRim,.68),[side*.018,.014,0]);
-    const frameB=add(blend(glassSide,glassBack,.45),[side*.018,.013,0]);
-    plate(frameA,frameB,add(frameB,[0,0,-.065]),add(frameA,[0,0,-.065]),11);
-    const lip=add(glassSide,[side*.04,-.03,-.04]);
-    face(glassFront,glassSide,lip,5);
-    face(glassSide,glassBack,lip,4);
-  }
-  for(const center of model.engines===1?[0]:[-model.hull*.56,model.hull*.56]) {
-    const count=model.square?4:8, radius=model.engines===1?.41:.31;
-    const ring=(point,z,scale)=> {
-      const angle=(point+(model.square?.5:0))*Math.PI*2/count;
-      return [center+Math.cos(angle)*radius*scale,Math.sin(angle)*radius*scale-.07,z];
+    const canopyLead=bomber?model.nose-.58:model.duckbill?2.70:model.intake?1.90:angular?2.05:2.19;
+    const canopyRear=bomber?model.nose-2.10:model.tandem||model.duckbill?-.46:model.chin?.1:.32;
+    const canopyWidth=model.hull*(model.duckbill?.69:bomber?.91:model.chin?.70:.58);
+    const canopyRise=bomber?.26:model.duckbill?.33:model.chin?.44:.36;
+    const arches=detailed?12:3;
+    const frames=detailed?[0,.07,.16,.28,.42,.45,.56,.67,.73,.76,.87,.95,1]:[0,.36,.67,1];
+    const glassAt=(t,angle)=>{
+      const z=mix(canopyLead,canopyRear,t);
+      const dome=Math.pow(Math.max(0,Math.sin(Math.PI*t)),.69);
+      return p(canopyWidth*(.10+.90*dome)*Math.sin(angle),deckAt(z)*.85+canopyRise*dome*Math.cos(angle),z);
     };
-    for(let point=0;point<count;point++) {
-      quad(ring(point,-1.83,1.09),ring(point,-2.35,1.15),ring(point+1,-2.35,1.15),ring(point+1,-1.83,1.09),model.paint);
-      quad(ring(point,-2.35,1.15),ring(point,-2.66,1),ring(point+1,-2.66,1),ring(point+1,-2.35,1.15),point%2?10:14);
-      quad(ring(point,-2.66,1),ring(point,-2.73,.78),ring(point+1,-2.73,.78),ring(point+1,-2.66,1),14);
-      tri(ring(point,-2.73,.78),ring(point+1,-2.73,.78),[center,-.07,-2.752],4);
-      tri(ring(point,-2.72,.89),ring(point+1,-2.72,.89),[center,-.07,-6.7],6,3);
-      tri(ring(point,-2.73,.46),ring(point+1,-2.73,.46),[center,-.07,-5.6],7,3);
+    for(let frame=1;frame<frames.length;frame++) {
+      const fore=frames[frame-1], aft=frames[frame];
+      for(let arch=1;arch<=arches;arch++) {
+        const a=(arch-1)*Math.PI/(2*arches), b=arch*Math.PI/(2*arches);
+        const brace=detailed&&((model.tandem||bomber)&&frame===5 || !model.chin&&frame===9);
+        plate(glassAt(fore,a),glassAt(aft,a),glassAt(aft,b),glassAt(fore,b),brace||arch===arches?11:3);
+      }
+    }
+  }
+  if(bomber) {
+    const pods=model.pods==='root'?[.24]:[.33,.62];
+    for(const side of [-1,1]) for(const spanFraction of pods) {
+      const flare=Math.sin(spanFraction*Math.PI)*wingBow;
+      const z=mix(rootLead,tipLead,spanFraction)+flare;
+      const center=side*span*spanFraction, cy=model.pods==='prop'?.035:-.30;
+      const offsets=model.pods==='twin'?[-.245,.245]:[0];
+      for(const offset of offsets) {
+        const shaft=center+offset, shell=model.pods==='root'?.46:model.pods==='prop'?.29:.24;
+        const probe=z+(model.pods==='prop'?.85:.62), end=z-(model.pods==='root'?1.38:.89);
+        const slices=detailed?16:7;
+        const rings=tube(shaft,[
+          [probe,shell*.78,shell*.71,cy],[probe-.14,shell,shell*.85,cy],
+          [z,shell*1.06,shell*.93,cy],[end+.20,shell*.75,shell*.70,cy],[end,shell*.61,shell*.50,cy],
+          [end+.12,shell*.47,shell*.37,cy]
+        ],slices,(station,segment)=>station>=4?14:segment<slices/2?model.paint:10);
+        if(model.pods==='prop') {
+          for(let i=0;i<slices;i++) tri(rings[0][i],rings[0][(i+1)%slices],[shaft,cy,probe+.27],model.trim);
+          for(let plane=0;plane<2;plane++) {
+            const at=probe+.13+plane*.075;
+            const part=4+(spanFraction>.5?2:0)+plane;
+            for(let blade=0;blade<4;blade++) {
+              const angle=blade*Math.PI*.5+plane*.51;
+              const edge=(radius,twist)=>[shaft+radius*Math.cos(angle+twist),cy+radius*Math.sin(angle+twist),at];
+              quad(edge(.12,-.19),edge(.95,-.09),edge(1.04,.08),edge(.18,.35),10,part);
+              tri(edge(.91,-.08),edge(1.04,.08),edge(.99,.15),5,part);
+            }
+          }
+        } else for(let i=0;i<slices;i++) {
+          tri(rings[0][i],rings[0][(i+1)%slices],[shaft,cy,probe-.13],4);
+          tri(rings[5][(i+1)%slices],rings[5][i],[shaft,cy,end+.1],4);
+        }
+      }
+      if(model.pods==='twin') {
+        const end=z+.34;
+        quad([center-.12,.04,end],[center+.12,.04,end],[center+.16,-.55,end-.18],[center-.16,-.55,end-.18],model.trim);
+      }
+    }
+  } else {
+    const centers=model.engines===1?[0]:[-model.hull*enginesWide,model.hull*enginesWide];
+    for(const center of centers) {
+      const box=model.name==='F-22';
+      const radius=model.engines===1?.41:flanker?.33:.29;
+      const rise=model.chin?-.27:flanker?-.24:-.14;
+      const outer=box?4:detailed?20:8;
+      if(!model.intake) {
+        const slotZ=model.chin?1.88:flanker?1.51:model.strakes?1.76:angular?1.40:1.58;
+        const intakeRings=tube(center,[
+          [slotZ,radius*(model.chin?1.27:1.26),radius*.66,rise],
+          [slotZ-.12,radius*1.32,radius*.76,rise],[slotZ-.39,radius*1.13,radius*.88,rise],
+          [-.61,radius*1.16,radius*.97,rise],[-1.87,radius*1.14,radius*.92,rise]
+        ],box||model.name==='F-15'?4:outer,(station,segment)=>station===1?11:segment<outer/2?model.paint:10);
+        const lip=intakeRings[0], opening=lip.map(point=>[mix(center,point[0],.76),mix(rise,point[1],.67),slotZ-.018]);
+        for(let i=0;i<lip.length;i++) {
+          const next=(i+1)%lip.length;
+          quad(lip[i],lip[next],opening[next],opening[i],14);
+          tri(opening[i],opening[next],[center,rise,slotZ-.23],4);
+        }
+      }
+      const nozzle=tube(center,[
+        [-1.83,radius*1.10,radius*.97,rise],[-2.15,radius*1.14,radius,rise],[-2.32,radius*1.10,radius*.90,rise],
+        [-2.48,radius*1.07,radius*.83,rise],[-2.685,radius*.97,radius*.72,rise],
+        [-2.73,radius*.82,radius*.64,rise],[-2.61,radius*.69,radius*.52,rise]
+      ],outer,(station,segment)=>station<2?model.paint:station===3||station===5?14:segment%2===0?10:14);
+      for(let i=0;i<outer;i++) {
+        const next=(i+1)%outer;
+        tri(nozzle[6][next],nozzle[6][i],[center,rise,-2.58],4);
+      }
+      if(detailed) {
+        // Exhaust uses a smaller separate fan to keep distant dithering stable as throttle changes.
+        const count=8;
+        for(let i=0;i<count;i++) {
+          const outerPoint=(part,scale,z)=>[center+Math.cos(part*2*Math.PI/count)*radius*scale,
+            rise+Math.sin(part*2*Math.PI/count)*radius*scale*.74,z];
+          tri(outerPoint(i,.80,-2.735),outerPoint(i+1,.80,-2.735),[center,rise,-6.65],6,3);
+          tri(outerPoint(i,.41,-2.74),outerPoint(i+1,.41,-2.74),[center,rise,-5.55],7,3);
+        }
+      }
     }
   }
   return new Float32Array(data);
 }
-const airframeMeshes=aircraftModels.map(jetGeometry);
-const airplanePreviews=airframeMeshes.map(mesh=>{
+const airframeMeshes=aircraftModels.map(model=>jetGeometry(model,true));
+const airplanePreviews=aircraftModels.map(model=>{
+  // Render a small matching geometry variant in the HUD rather than the full airframe.
+  const mesh=jetGeometry(model,false);
   const faces=[];
+  const scale=model.role==='bomber'?.61:1;
+  const paintColors=['peach','copper','haze','indigo','slate','cream',null,null,'mauve','haze',
+    'slate','peach','red','cream','copper','olive'];
   for(let start=0;start<mesh.length;start+=24) {
-    if(mesh[start+7]===3 || mesh[start+4]<-.06) continue;
-    const vertices=[0,8,16].map(offset=>Array.from(mesh.subarray(start+offset,start+offset+3)));
-    const color=['peach','copper','haze','indigo','slate','cream',null,null,'mauve','haze',
-      'slate','peach','red','cream','copper'][mesh[start+6]];
+    if(mesh[start+4]<-.06) continue;
+    const vertices=[0,8,16].map(offset=>Array.from(mesh.subarray(start+offset,start+offset+3),v=>v*scale));
+    const area=Math.abs(cross(sub(vertices[1],vertices[0]),sub(vertices[2],vertices[0]))[1]);
+    if(area<.006) continue;
+    const color=paintColors[mesh[start+6]];
     const height=vertices.reduce((total,vertex)=>total+vertex[1],0)/3;
     faces.push({vertices,color,height});
   }
@@ -610,7 +795,7 @@ function setupGraphics() {
     gl.uniform1i(u.titleView,!aircraft);
     gl.drawArrays(gl.TRIANGLES,0,3);
   };
-  renderJet=(camera,aircraft,time,visibility,screenOffset=[0,0])=>{
+  renderJet=(camera,aircraft,time,visibility,screenOffset=[0,0],modelIndex=selectedAircraft)=>{
     if(visibility<=0) return;
     const u=jet.uniform;
     gl.useProgram(jet.id);
@@ -622,10 +807,13 @@ function setupGraphics() {
     gl.uniform2f(u.resolution,world.width,world.height);
     gl.uniform2fv(u.screenOffset,screenOffset);
     gl.uniform2f(u.control,aircraft.stick[0],aircraft.stick[1]);
+    const span=aircraftModels[modelIndex].wing[4];
+    gl.uniform2f(u.propPivots,span*.33,span*.62);
+    gl.uniform1f(u.propAngle,aircraft.thrust>0?time*mix(8,37,aircraft.thrust):0);
     gl.uniform1f(u.lens,camera.lens); gl.uniform1f(u.thrust,aircraft.thrust);
     gl.uniform3fv(u.forward,camera.forward); gl.uniform1f(u.flicker,Math.floor(time*18)%2);
     gl.uniform1f(u.visibility,visibility);
-    const [start,count]=ranges[selectedAircraft];
+    const [start,count]=ranges[modelIndex];
     gl.drawArrays(gl.TRIANGLES,start,count);
   };
   return {
@@ -638,7 +826,7 @@ function setupGraphics() {
       terrainReady=true;
     },
     compileJet() {
-      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset lens thrust forward flicker visibility');
+      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset propPivots propAngle lens thrust forward flicker visibility');
     }
   };
 }
@@ -694,45 +882,219 @@ const missions=[
   {name:'自由飞行', difficulty:'', drones:0, ground:0},
   {name:'湖面试航', difficulty:'入门', drones:3, ground:0, skill:0},
   {name:'红叶峡谷', difficulty:'进阶', drones:3, ground:2, skill:1, lookout:true},
-  {name:'最后一缕光', difficulty:'挑战', drones:5, ground:2, skill:2, lookout:true, jammer:true}
+  {name:'最后一缕光', difficulty:'挑战', drones:5, ground:2, skill:2, lookout:true, jammer:true},
+  {name:'暮光失联',difficulty:'入门',skill:0,chapter:1,next:5,
+    briefing:'暮湾的引航台突然静默。有人把无人机编队和巡逻车留在了谷口。沿旧航路找到信号中断的源头。',
+    waves:[
+      {line:'绕过湖湾巡逻',contacts:[['drone',2],['convoy',1]]},
+      {line:'截断伪造信号',contacts:[['interceptor',2],['relay',1],['lookout',1]]}
+    ]},
+  {name:'孤灯巡线',difficulty:'进阶',skill:1,role:'bomber',chapter:2,next:6,
+    briefing:'山村的最后一盏信号灯还亮着。换乘大型飞机，在两处断点投送引航信标，给等候救援的机组留出归路。',
+    waves:[
+      {line:'点亮南岸信标',contacts:[['beacon',1]]},
+      {line:'接通北岸航线',contacts:[['beacon',1],['drone',2]]}
+    ]},
+  {name:'镜谷回声',difficulty:'进阶',skill:1,chapter:3,next:7,
+    briefing:'两盏灯同时收到了伪造的呼叫。护航编队锁定了移动中继车，从山谷两侧包抄的无人机正试图夺回它。',
+    waves:[
+      {line:'追踪移动中继',contacts:[['convoy',2],['drone',2]]},
+      {line:'穿过双重干扰',contacts:[['interceptor',3],['jammer',1],['relay',1]]}
+    ]},
+  {name:'雾脊引航',difficulty:'挑战',skill:2,role:'bomber',chapter:4,next:8,
+    briefing:'晚雾已经越过山脊。护航机群会开辟入口，你的任务是沿备用航线分两次投送信标，照亮撤离通道。',
+    waves:[
+      {line:'布设山前信标',contacts:[['beacon',1],['drone',2]]},
+      {line:'照亮雾脊出口',contacts:[['beacon',1],['lookout',1],['interceptor',2]]}
+    ]},
+  {name:'群山归航',difficulty:'挑战',skill:2,chapter:5,
+    briefing:'备用航线已经点亮。最后一批救援机正在返航，山脊后的指挥编队和地面中继站仍在争夺空域。',
+    waves:[
+      {line:'清出返航空域',contacts:[['interceptor',3],['convoy',1],['jammer',1]]},
+      {line:'迎击压轴编队',contacts:[['guardian',2],['interceptor',3],['lookout',1],['relay',1]]},
+      {line:'护送最后一盏灯',contacts:[['guardian',3],['interceptor',3],['jammer',1]]}
+    ]}
 ];
-const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'干扰机'};
+const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'干扰机',
+  interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点'};
+const targetProfiles={
+  drone:{air:true,health:17},interceptor:{air:true,health:24,skill:2},
+  guardian:{air:true,health:33,skill:1},
+  lookout:{air:true,health:24},jammer:{air:true,health:23},
+  ground:{health:19},convoy:{health:18},relay:{health:20},beacon:{health:1}
+};
+const isAirContact=target=>Boolean(targetProfiles[target.kind]?.air);
+const isHostileContact=target=>target.kind!=='beacon';
+const airContactSkill=(target,config)=>targetProfiles[target.kind]?.skill??(target.kind==='drone'?config.skill:0);
 let selectedMission=0, mission=null;
 const missionInfo=()=>missions[selectedMission];
+function compatibleAircraft() {
+  const role=missionInfo().role;
+  return aircraftModels.reduce((indices,model,index)=>{
+    if(selectedMission===0 || (role?model.role===role:!model.role)) indices.push(index);
+    return indices;
+  },[]);
+}
+function fitAircraftToMission() {
+  const available=compatibleAircraft();
+  if(available.length && !available.includes(selectedAircraft)) selectedAircraft=available[0];
+}
 function changeMission(direction) {
-  if(ready&&!flying) selectedMission=wrap(selectedMission+direction,missions.length);
+  if(ready&&!flying) {
+    selectedMission=wrap(selectedMission+direction,missions.length);
+    fitAircraftToMission();
+  }
+}
+function missionTarget(kind,position,health,phase) {
+  return {kind,position:position.slice(),center:position.slice(),health,phase,
+    heading:0,evade:0,evadeTick:-1,maxHealth:health};
+}
+function shorePosition(z,direction) {
+  let x=2200;
+  for(let attempt=0;attempt<165 && solidHeight(x,z)<12;attempt++) x+=direction*6;
+  return [x,Math.max(0,solidHeight(x,z))+2,z];
 }
 function resetMission() {
   const config=missionInfo();
   const kit=selectedLoadout();
-  mission={config,...kit,targets:[],effects:[],locked:null,charge:0,
-    pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,threat:0,warningTime:5,
+  mission={config,...kit,targets:[],locked:null,campaign:null,
     shield:100,integrity:100,damageFlash:0,recoveryTime:0,damageReason:'',
     zones:{body:100,left:100,right:100,tail:100},
     points:0,complete:false,notice:'',noticeTime:0};
+  resetArmament();
   if(selectedMission===0) return;
-  function target(kind,position,health,phase) {
-    return {kind,position:position.slice(),center:position.slice(),health,phase,
-      heading:0,evade:0,evadeTick:-1,maxHealth:health};
+  if(config.waves) {
+    mission.campaign={wave:0,banner:5,delivered:0};
+    spawnCampaignWave();
+    cycleTarget();
+    return;
   }
   for(let i=0;i<config.drones;i++) {
-    mission.targets.push(target('drone',[2170+(i%3-1)*78,51+(i%3)*22,550+i*76],17+config.skill*5,i));
+    mission.targets.push(missionTarget('drone',[2170+(i%3-1)*78,51+(i%3)*22,550+i*76],17+config.skill*5,i));
   }
-  if(config.lookout) mission.targets.push(target('lookout',[2120,133,925],24,.2));
-  if(config.jammer) mission.targets.push(target('jammer',[2250,98,870],23,2.1));
+  if(config.lookout) mission.targets.push(missionTarget('lookout',[2120,133,925],24,.2));
+  if(config.jammer) mission.targets.push(missionTarget('jammer',[2250,98,870],23,2.1));
   for(let i=0;i<config.ground;i++) {
-    const z=680+i*210;
-    let x=2200;
-    const direction=i%2===0?-1:1;
-    for(let n=0;n<165 && solidHeight(x,z)<8;n++) x+=direction*6;
-    mission.targets.push(target('ground',[x,Math.max(0,solidHeight(x,z))+2,z],19,i));
+    mission.targets.push(missionTarget('ground',shorePosition(680+i*210,i%2===0?-1:1),19,i));
   }
   cycleTarget();
 }
+function spawnCampaignWave() {
+  const {wave}=mission.campaign;
+  const {config}=mission;
+  const {contacts}=config.waves[wave];
+  let airIndex=0, groundIndex=0;
+  for(const [kind,count] of contacts) for(let index=0;index<count;index++) {
+    const profile=targetProfiles[kind];
+    const advance=wave*265, center=aircraft.position;
+    let position;
+    if(profile.air) {
+      const slot=airIndex++;
+      const spread=kind==='guardian'?95:67;
+      const x=2140+(slot%4-1.5)*spread;
+      const z=Math.max(555+advance,center[2]+255)+Math.floor(slot/2)*95+(kind==='lookout'?160:0);
+      position=[x,Math.max(52+(slot%3)*24+(kind==='lookout'?50:0),solidHeight(x,z)+30),z];
+    } else {
+      const slot=groundIndex++;
+      const z=Math.max(572+advance,center[2]+221)+slot*96;
+      const x=2110+(slot%2)*145;
+      position=kind==='beacon'?[x,Math.max(0,solidHeight(x,z))+53,z]:shorePosition(z,slot%2===0?-1:1);
+    }
+    const health=profile.health+(kind==='beacon'?0:config.skill*2);
+    mission.targets.push(missionTarget(kind,position,health,index+airIndex*.31+groundIndex*.71));
+  }
+}
+function advanceCampaign() {
+  const campaign=mission?.campaign;
+  if(!campaign || mission.targets.some(target=>target.health>0) || campaign.wave+1>=mission.config.waves.length) return false;
+  campaign.wave++;
+  campaign.banner=5;
+  const {tracers,decoys}=selectedLoadout();
+  mission.tracers=Math.min(tracers,mission.tracers+2);
+  mission.decoys=Math.min(decoys,mission.decoys+1);
+  mission.warningTime=5;
+  mission.incoming=null;
+  spawnCampaignWave();
+  cycleTarget();
+  notifyMission(mission.config.waves[campaign.wave].line);
+  return true;
+}
+const beaconDistance=(target,s=aircraft)=>length(sub(target.position,s.position));
+function nearestBeacon() {
+  let nearest=null, distance=Infinity;
+  for(const target of mission.targets) {
+    if(target.kind!=='beacon'||!target.health) continue;
+    const candidate=beaconDistance(target);
+    if(candidate<distance) {distance=candidate;nearest=target;}
+  }
+  return nearest;
+}
+function deliverBeacon() {
+  if(!flying||paused||!mission?.campaign||mission.config.role!=='bomber'||mission.recoveryTime>0) return;
+  const target=nearestBeacon();
+  if(!target) return;
+  if(beaconDistance(target)>136) {notifyMission('请接近信标投送点');return;}
+  target.health=0;
+  mission.campaign.delivered++;
+  mission.points+=180;
+  createBurst(target.position,false);
+  playCue('decoy');
+  notifyMission('引航信标已点亮');
+  if(!advanceCampaign() && mission.targets.every(contact=>!contact.health)) {
+    mission.complete=true;
+    mission.incoming=null;
+    notifyMission('章节完成 · 引航线已接通');
+  }
+  saveCheckpoint();
+}
+function updateCampaign(dt) {
+  if(!mission.campaign) return;
+  mission.campaign.banner=Math.max(0,mission.campaign.banner-dt);
+  for(const target of mission.targets) {
+    if(target.kind!=='convoy'||!target.health) continue;
+    const wave=simulationTime*.18+target.phase;
+    const z=target.center[2]+Math.sin(wave)*78;
+    const direction=target.center[0]<2200?-1:1;
+    let x=target.center[0]+Math.sin(wave*.67)*24;
+    for(let move=0;move<22&&solidHeight(x,z)<8;move++) x+=direction*4;
+    target.position=[x,Math.max(0,solidHeight(x,z))+2,z];
+    target.heading=Math.cos(wave)>0?0:Math.PI;
+  }
+}
+function campaignHud(s) {
+  const campaign=mission?.campaign;
+  if(!campaign) return;
+  const {config}=mission;
+  const x=13+screenInsets[3], y=screenInsets[0]+(width<330?111:106), w=Math.min(width-91,131);
+  const beacon=config.role==='bomber'&&!mission.complete?nearestBeacon():null;
+  const phase=config.waves[campaign.wave].line;
+  const height=beacon?45:32;
+  rect(x,y,w,height,colors.ink);
+  corners(x,y,w-1,height-1,5,campaign.banner>0?colors.cream:colors.haze);
+  type('第 '+config.chapter+' 章 · '+(campaign.wave+1)+' / '+config.waves.length+' 波',x+5,y+12,8,colors.gold);
+  type(mission.complete?'章节完成':phase,x+5,y+25,9,colors.cream);
+  if(beacon) {
+    const distance=beaconDistance(beacon,s), close=distance<=136;
+    type(close?'信标可投送':'信标 '+Math.floor(distance)+' 米',x+5,y+38,9,close?colors.gold:colors.haze);
+    if(!touch) canvasButton('beaconDrop','投送信标',x,y+height+4,Math.min(w,84),19,close,9);
+  }
+  if(mission.complete && config.next!==undefined) {
+    canvasButton('nextChapter','下一章简报',x,y+height+4,Math.min(79,w),19,true,9);
+  }
+}
+function resetArmament() {
+  const {tracers,decoys}=selectedLoadout();
+  Object.assign(mission,{tracers,decoys,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
+    warningTime:5,charge:0,manualLockTime:0,lockLostTime:0,incoming:null,effects:[]});
+}
 const supportActive=kind=>mission.targets.some(target=>target.kind===kind&&target.health>0);
-const radarRange=()=>supportActive('jammer')?510:850;
+const jammerRadius=360;
+const liveJammers=()=>mission.targets.filter(target=>target.kind==='jammer'&&target.health>0);
+const interfered=(s=aircraft)=>liveJammers().some(target=>
+  Math.hypot(target.position[0]-s.position[0],target.position[2]-s.position[2])<=jammerRadius);
+const radarRange=(s=aircraft)=>interfered(s)?510:850;
 const targetRange=target=>length(sub(target.position,aircraft.position));
-const radarVisible=target=>target.health>0 && targetRange(target)<radarRange();
+const withinLockRange=target=>targetRange(target)<radarRange();
 function clearSight(origin,destination) {
   for(let hop=1;hop<6;hop++) {
     const [x,y,z]=blend(origin,destination,hop/6);
@@ -740,12 +1102,48 @@ function clearSight(origin,destination) {
   }
   return true;
 }
-function cycleTarget() {
+function cycleTarget(manual=false) {
   if(!mission || selectedMission===0) return;
-  const contacts=mission.targets.filter(radarVisible);
+  const contacts=mission.targets.filter(target=>target.health>0&&isHostileContact(target));
   const current=contacts.indexOf(mission.locked);
-  mission.locked=contacts.length?contacts[(current+1)%contacts.length]:null;
-  mission.charge=0;
+  chooseTarget(contacts.length?contacts[(current+1)%contacts.length]:null,manual);
+}
+function chooseTarget(target,manual=false) {
+  if(mission.locked!==target) {
+    mission.locked=target;
+    mission.charge=0;
+    mission.lockLostTime=0;
+  }
+  mission.manualLockTime=manual?3:0;
+}
+function trackable(target,nose,alignment) {
+  return target && target.health>0 && isHostileContact(target) && withinLockRange(target) &&
+    dot(nose,unit(sub(target.position,aircraft.position)))>alignment &&
+    clearSight(aircraft.position,target.position);
+}
+function updateTargetLock(dt) {
+  if(!selectedMission) return;
+  const nose=rotate(aircraft.attitude,[0,0,1]);
+  const current=mission.locked;
+  const tracking=trackable(current,nose,mission.charge>.25?.86:.90);
+  mission.manualLockTime=Math.max(0,mission.manualLockTime-dt);
+  mission.lockLostTime=tracking?0:mission.lockLostTime+dt;
+  if(!current || !current.health || (!mission.manualLockTime&&mission.lockLostTime>.36)) {
+    let best=null, bestScore=-Infinity;
+    for(const target of mission.targets) {
+      if(!trackable(target,nose,.90)) continue;
+      const offset=sub(target.position,aircraft.position);
+      const score=dot(nose,unit(offset))-length(offset)*.00011;
+      if(score>bestScore) {best=target;bestScore=score;}
+    }
+    if(best) chooseTarget(best);
+    else if(!current||!current.health) cycleTarget();
+  }
+  const before=mission.charge;
+  const canTrack=trackable(mission.locked,nose,before>.25?.86:.90);
+  const rate=canTrack?1/(mission.lockTime*(interfered()?1.9:1)):-4;
+  mission.charge=clamp(before+dt*rate,0,1);
+  if(before<1&&mission.charge===1) playCue('lock');
 }
 function notifyMission(message) {
   mission.notice=message;mission.noticeTime=1.8;
@@ -763,7 +1161,7 @@ function damageAircraft(amount,reason) {
   mission.damageReason=reason;
   if(mission.integrity===0) {
     mission.recoveryTime=1.5;
-    mission.threat=0;
+    mission.incoming=null;
   }
 }
 function updateAircraftDamage(dt) {
@@ -779,44 +1177,69 @@ function updateAircraftDamage(dt) {
     mission.integrity=100;
     Object.keys(mission.zones).forEach(zone=>{mission.zones[zone]=100;});
     mission.damageFlash=0;
-    mission.warningTime=5;
-    notifyMission('机体已复位');
+    resetArmament();
+    combatPointers.clear();
+    keys.delete('KeyJ');keys.delete('KeyK');keys.delete('KeyL');
+    notifyMission('机体复位 · 装备已补满');
+    saveCheckpoint();
   }
 }
+function incomingPoint(incoming,s,progress=1-incoming.remaining/incoming.duration) {
+  const t=clamp(progress,0,1);
+  const point=blend(incoming.origin,s.position,t);
+  point[1]+=Math.sin(t*Math.PI)*4;
+  return point;
+}
 function dropDecoy() {
-  if(!mission || selectedMission===0 || mission.complete || mission.decoys<=0) return;
+  if(!mission || mission.recoveryTime>0 || mission.decoys<=0) return;
   mission.decoys--;
   playCue('decoy');
-  if(mission.threat>0) {
-    mission.threat=0;mission.warningTime=3.8;
+  if(mission.incoming) {
+    createBurst(incomingPoint(mission.incoming,aircraft),false);
+    mission.incoming=null;mission.warningTime=3.8;
     notifyMission('诱饵已引开追踪');
   } else notifyMission('已释放诱饵');
   mission.effects.push({position:sub(aircraft.position,mul(unit(aircraft.velocity),5)),life:.62,kind:'decoy'});
 }
-function scoreHit(target,damage) {
-  if(target.health<=0) return;
+function createBurst(position,large) {
+  const duration=large?1.28:.62;
+  mission.effects.push({kind:'burst',position:position.slice(),life:duration,duration,large,
+    phase:Math.random()*Math.PI*2});
+  if(large) playCue('impact');
+}
+function scoreHit(target,damage,missile=false) {
+  if(target.health<=0) {
+    if(missile) createBurst(target.position,true);
+    return;
+  }
   target.health=Math.max(0,target.health-damage);
-  mission.effects.push({position:target.position.slice(),life:target.health>0?.18:.64,kind:'spark'});
+  if(missile) {
+    createBurst(target.position,true);
+    notifyMission('导弹命中 · '+targetNames[target.kind]);
+  } else if(target.health===0) createBurst(target.position,false);
+  else mission.effects.push({position:target.position.slice(),life:.18,kind:'spark'});
   if(target.health===0) {
     mission.points+=target.kind==='drone'?100:150;
-    notifyMission(targetNames[target.kind]+'已清除');
+    notifyMission((missile?'导弹命中 · ':'')+targetNames[target.kind]+'已清除');
     if(target===mission.locked) cycleTarget();
-    if(mission.targets.every(candidate=>!candidate.health)) {
-      mission.complete=true;mission.threat=0;
-      notifyMission('任务完成 · 按暂停返回选关');
+    const clear=mission.targets.every(candidate=>!candidate.health);
+    const nextWave=clear&&advanceCampaign();
+    if(clear&&!nextWave) {
+      mission.complete=true;mission.incoming=null;
+      notifyMission(missile?'导弹命中 · 任务完成':'任务完成');
     }
     saveCheckpoint();
   }
 }
 function firePulse() {
-  if(!mission || !selectedMission || mission.complete || mission.recoveryTime>0 || mission.pulseTime>0) return;
+  if(!mission || mission.recoveryTime>0 || mission.pulseTime>0) return;
   mission.pulseTime=mission.cannonInterval;
   mission.muzzleTime=.42;
   playCue('pulse');
   const nose=rotate(aircraft.attitude,[0,0,1]);
   let best=null, bestAlignment=.994;
   for(const target of mission.targets) {
-    if(target.health<=0) continue;
+    if(target.health<=0||!isHostileContact(target)) continue;
     const offset=sub(target.position,aircraft.position);
     if(length(offset)>245) continue;
     const alignment=dot(nose,unit(offset));
@@ -829,11 +1252,11 @@ function firePulse() {
   if(best) scoreHit(best,mission.cannon);
 }
 function fireTracer() {
-  if(!mission || !selectedMission || mission.complete || mission.recoveryTime>0 || mission.tracerTime>0) return;
+  if(!mission || mission.recoveryTime>0 || mission.tracerTime>0) return;
   mission.tracerTime=.32;
   if(mission.tracers<=0) {notifyMission('导弹已用尽');return;}
-  if(!mission.locked || mission.charge<1) {
-    notifyMission('等待目标锁定');
+  if(!mission.locked || mission.charge<1 || !trackable(mission.locked,rotate(aircraft.attitude,[0,0,1]),.86)) {
+    notifyMission(mission.locked?'等待目标锁定':'当前无锁定目标');
     return;
   }
   mission.tracers--;
@@ -854,8 +1277,12 @@ function projectilePoint(effect,progress) {
   position[1]+=Math.sin(t*Math.PI)*effect.arc;
   return position;
 }
+const flightPatterns={
+  drone:[.51,21,8],interceptor:[.81,46,17],guardian:[.29,28,8],
+  lookout:[.34,35,6],jammer:[.34,35,6]
+};
 function updateMission(dt) {
-  if(!mission || !selectedMission) return;
+  if(!mission) return;
   const {config}=mission;
   mission.pulseTime=Math.max(0,mission.pulseTime-dt);
   mission.tracerTime=Math.max(0,mission.tracerTime-dt);
@@ -869,46 +1296,50 @@ function updateMission(dt) {
       if(effect.kind==='tracer') effect.position=projectilePoint(effect,1-effect.life/effect.duration);
     } else {
       mission.effects.splice(i,1);
-      if(effect.kind==='tracer') scoreHit(effect.target,mission.tracerDamage);
+      if(effect.kind==='tracer' && !mission.recoveryTime) scoreHit(effect.target,mission.tracerDamage,true);
     }
   }
-  if(mission.complete || mission.recoveryTime>0) return;
+  if(mission.recoveryTime>0) return;
   for(const target of mission.targets) {
-    if(!target.health || target.kind==='ground') continue;
-    const skill=target.kind==='drone'?config.skill:0;
-    const wave=simulationTime*(.51+skill*.18)+target.phase;
-    const width=target.kind==='drone'?21+skill*29:35;
+    if(!target.health || !isAirContact(target)) continue;
+    const skill=airContactSkill(target,config);
+    const motion=flightPatterns[target.kind];
+    const wave=simulationTime*(motion[0]+skill*.13)+target.phase;
+    const width=motion[1]+skill*22;
     const nearLock=skill>0 && target===mission.locked && mission.charge>.3;
     const evadeTick=Math.floor((simulationTime+target.phase)*1.1);
     if(nearLock && evadeTick!==target.evadeTick) target.evadeTick=evadeTick;
     target.evade=approach(target.evade,nearLock?(target.evadeTick%2?1:-1)*(skill===2?62:26):0,2.7,dt);
     const x=target.center[0]+Math.sin(wave)*width+target.evade;
     const z=target.center[2]+Math.sin(wave*.73)*width*.92;
-    const y=target.center[1]+Math.sin(wave*(1+skill*.4))*(8+skill*7)+Math.abs(target.evade)*.29;
+    const y=target.center[1]+Math.sin(wave*(1+skill*.4))*(motion[2]+skill*7)+Math.abs(target.evade)*.29;
     const offset=sub([x,y,z],target.position);
     if(Math.hypot(offset[0],offset[2])>.015) target.heading=Math.atan2(offset[0],offset[2]);
     target.position=[x,Math.max(y,solidHeight(x,z)+22),z];
   }
-  if(!mission.locked || !radarVisible(mission.locked)) cycleTarget();
-  const nose=rotate(aircraft.attitude,[0,0,1]);
-  const contact=mission.locked;
-  const tracking=contact && dot(nose,unit(sub(contact.position,aircraft.position)))>.90
-    && clearSight(aircraft.position,contact.position);
-  const jam=supportActive('jammer');
-  const before=mission.charge;
-  mission.charge=clamp(before+dt*(tracking?1/(mission.lockTime*(jam?1.9:1)):-3),0,1);
-  if(before<1&&mission.charge===1) playCue('lock');
+  updateCampaign(dt);
+  updateTargetLock(dt);
   if(keys.has('KeyJ')||combatPointers.get('pulse')!==undefined) firePulse();
   if(keys.has('KeyK')||combatPointers.get('tracer')!==undefined) fireTracer();
-  const patrol=mission.targets.some(target=>target.kind==='drone'&&target.health>0&&targetRange(target)<(supportActive('lookout')?520:340));
-  if(mission.threat>0) {
-    mission.threat=Math.max(0,mission.threat-dt);
-    if(mission.threat===0) {
+  if(mission.complete || !config.skill) return;
+  const incoming=mission.incoming;
+  if(incoming) {
+    incoming.remaining-=dt;
+    if(incoming.remaining<=0) {
+      mission.incoming=null;
+      createBurst(aircraft.position,false);
       damageAircraft(16+config.skill*13,'来袭命中');
       mission.warningTime=3.5-config.skill*.65;
     }
-  } else if(patrol && config.skill>0 && (mission.warningTime-=dt)<=0) {
-    mission.threat=2.8-config.skill*.42;
+  } else {
+    const radius=supportActive('lookout')?520:340;
+    const source=mission.targets.find(target=>target.health>0&&isAirContact(target)&&
+      target.kind!=='lookout'&&target.kind!=='jammer'&&targetRange(target)<radius);
+    if(source && (mission.warningTime-=dt)<=0) {
+      const duration=2.8-config.skill*.42;
+      mission.incoming={origin:source.position.slice(),duration,remaining:duration};
+      playCue('incoming');
+    }
   }
 }
 function spray(position,velocity,water) {
@@ -937,11 +1368,12 @@ function simulate(dt) {
   const airSpeed=length(s.velocity);
   const alpha=Math.atan2(-dot(s.velocity,basis[1]),Math.max(6,dot(s.velocity,basis[2])));
   const authority=clamp((airSpeed-19)/35,.31,1)*(s.stall?.66:1);
+  const heavy=selectedModel().role==='bomber';
   const turn=Math.sin(bank)*clamp(9.8/Math.max(23,airSpeed)*1.48,.12,.49);
   const rates=[
-    (stick[0]*.78-pitch*.55*(1-Math.abs(stick[0])))*authority,
-    (stick[1]*1.62-bank*.69*(1-Math.abs(stick[1])))*authority,
-    (stick[2]*.66+turn)*authority
+    (stick[0]*(heavy?.59:.78)-pitch*.55*(1-Math.abs(stick[0])))*authority,
+    (stick[1]*(heavy?.92:1.62)-bank*.69*(1-Math.abs(stick[1])))*authority,
+    (stick[2]*(heavy?.47:.66)+turn)*authority
   ].map((v,i)=>approach(s.rates[i],v,7,dt));
   const attitude=integrateAttitude(s.attitude,[-rates[0],rates[2],-rates[1]],dt);
   const [right,up,forward]=basisOf(attitude);
@@ -1014,8 +1446,9 @@ function flightCamera(s,dt) {
   const speedFactor=clamp((s.speed-38)/65,0,1);
   const flightDirection=unit(s.velocity);
   const target=unit(blend(nose,flightDirection,mix(.025,.28,viewBlend)));
-  const chaseDistance=mix(15,25,speedFactor)-Math.max(0,s.g-1.65)*1.2;
-  const eyeOffset=add(mul(up,mix(.94,mix(6.5,9.2,speedFactor),viewBlend)),mul(nose,mix(.54,-chaseDistance,viewBlend)));
+  const scale=selectedModel().role==='bomber'?1.42:1;
+  const chaseDistance=(mix(15,25,speedFactor)-Math.max(0,s.g-1.65)*1.2)*scale;
+  const eyeOffset=add(mul(up,mix(.94,mix(6.5,9.2,speedFactor)*scale,viewBlend)),mul(nose,mix(.54,-chaseDistance,viewBlend)));
   const anchor=s.position;
   if(!camera) camera={anchor,velocity:[0,0,0],attitude:s.attitude,tilt:0};
   [camera.anchor,camera.velocity]=spring(camera.anchor,camera.velocity,anchor,mix(25,10,viewBlend),dt);
@@ -1232,6 +1665,7 @@ function titleScreen(time) {
       type('出 击',center,y+21,14,colors.ink,'display','center');
     }
     canvasButton('hangar','机库 · 选机',width-84,19,68,22,false,10);
+    if(missionInfo().chapter) canvasButton('campaignBrief','战役简报',16,19,64,22,false,10);
   }
   const small=width<300?9:10;
   function hint(message,y,color,x=center,size=small) {
@@ -1255,8 +1689,10 @@ function titleScreen(time) {
       rect(missionX-67,missionY+22,134,26,pattern(colors.ink,13));
       hint(kit.era,rowY+32,colors.gold,aircraftX,9);
       hint(kitText,rowY+43,colors.cream,aircraftX,9);
-      const rules=config.lookout?(config.jammer?'预警 · 干扰 · 地面靶':'预警 · 地面靶'):config.drones?'无人机 · 巡航':'无任务目标';
-      hint(config.difficulty?'敌机 · '+config.difficulty:'沙盒',missionY+32,colors.gold,missionX,9);
+      const rules=config.role==='bomber'?'大型机 · 投送信标':config.waves?'混合编队 · '+config.waves.length+' 波':
+        config.lookout?(config.jammer?'预警 · 干扰 · 地面靶':'预警 · 地面靶'):config.drones?'无人机 · 巡航':'无任务目标';
+      hint(config.chapter?'暮湾航线 · 第 '+config.chapter+' 章':
+        config.difficulty?'敌机 · '+config.difficulty:'沙盒',missionY+32,colors.gold,missionX,9);
       hint(rules,missionY+43,colors.cream,missionX,9);
     }
     hintY=missionY+(shortStack?34:60);
@@ -1278,36 +1714,68 @@ function titleScreen(time) {
   } else type(footer,center,height-13,8,colors.haze,'mono','center');
 }
 
+let briefing=false;
+function toggleBriefing() {
+  if(ready&&!flying&&missionInfo().chapter) briefing=!briefing;
+}
+function campaignBriefing() {
+  const config=missionInfo(), cx=width/2;
+  const w=Math.min(width-20,343), h=Math.min(height-26,198), x=Math.round(cx-w/2), y=Math.round(height/2-h/2);
+  rect(0,0,width,height,pattern(colors.ink,7));
+  rect(x,y,w,h,colors.ink);
+  corners(x,y,w-1,h-1,10,colors.gold);
+  type('暮湾航线 · 第 '+config.chapter+' 章',cx,y+20,10,colors.gold,'mono','center');
+  type(config.name,cx,y+42,17,colors.cream,'display','center');
+  const bodyWidth=Math.floor((w-22)/11), body=Array.from(config.briefing);
+  for(let i=0;i<body.length;i+=bodyWidth) {
+    type(body.slice(i,i+bodyWidth).join(''),cx,y+61+Math.floor(i/bodyWidth)*15,11,colors.cream,'mono','center');
+  }
+  const labels=config.role==='bomber'?['投送引航信标',touch?'接近后点击投送':'接近后按 B 投送']:
+    ['清除多波混合编队','雷达可点选目标'];
+  type(labels[0]+' · '+config.waves.length+' 波',cx,y+h-53,9,colors.gold,'mono','center');
+  type(labels[1],cx,y+h-39,9,colors.cream,'mono','center');
+  const bw=Math.floor((w-34)/2);
+  canvasButton('closeBrief','返回',x+12,y+h-30,bw,20,false,11);
+  canvasButton('executeBrief','本章出击',x+w-12-bw,y+h-30,bw,20,true,11);
+}
+
 let hangar=false, hangarYaw=.78, hangarPitch=.38, hangarDrag=null;
 function hangarScreen(time) {
   gl.clearColor(.125,.094,.176,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-  const narrow=width<390, distance=narrow?15.5:10.6;
+  const narrow=width<390, profile=selectedModel();
+  const rowWidth=narrow?Math.floor((width-38)/2):Math.min(120,Math.floor(width*.26));
+  const w=narrow?width-30:Math.min(171,Math.floor(width*.29));
+  const left=narrow?9:rowWidth+24, right=narrow?width-9:width-w-24;
+  const previewWidth=right-left, previewCenter=(left+right)/2, lens=.61;
+  // Fit the enclosing sphere in the space between the two panels at every orbit angle.
+  const radius=Math.max(profile.nose,profile.wing[4])+.35;
+  const distance=Math.max(narrow?15.5:10.6,Math.hypot(radius,height*radius/(lens*previewWidth)));
   const eye=[Math.sin(hangarYaw)*distance,Math.sin(hangarPitch)*distance,Math.cos(hangarYaw)*distance];
-  const modelCamera=makeCamera(eye,mul(eye,-1),[0,1,0],.61);
+  const modelCamera=makeCamera(eye,mul(eye,-1),[0,1,0],lens);
   const model={position:[0,0,0],attitude:[0,0,0,1],stick:[0,0,0],thrust:0};
-  renderJet(modelCamera,model,time,1,narrow?[0,.32]:[0,.035]);
+  renderJet(modelCamera,model,time,1,[2*previewCenter/width-1,narrow?.32:.035]);
   rect(0,0,width,49,colors.black);
   line(0,48,width-1,48,colors.haze);
   type('机库',19,29,20,colors.cream,'display');
   type('选择你的飞机',narrow?74:91,28,11,colors.gold);
   canvasButton('closeHangar','返回',width-69,15,52,21,false,11);
   const listTop=narrow?Math.min(Math.round(height*.55),height-167):62;
-  const columns=narrow?2:1, rowCount=aircraftModels.length/columns;
+  const available=compatibleAircraft();
+  const columns=narrow?2:1, rowCount=Math.ceil(available.length/columns);
   const rowHeight=narrow?Math.min(19,Math.floor((height-listTop-92)/rowCount)):
     Math.min(24,Math.floor((height-listTop-17)/rowCount));
-  const rowWidth=narrow?Math.floor((width-38)/2):Math.min(120,Math.floor(width*.26));
   hitBoxes.aircraftChoices=[];
-  aircraftModels.forEach((airframe,index)=>{
-    const column=narrow?index%2:0, row=Math.floor(index/columns);
+  available.forEach((index,slotIndex)=>{
+    const airframe=aircraftModels[index];
+    const column=narrow?slotIndex%2:0, row=Math.floor(slotIndex/columns);
     const x=15+column*(rowWidth+8), y=listTop+row*rowHeight;
     const active=index===selectedAircraft;
     const slot=[x,y,rowWidth,rowHeight-2];
-    hitBoxes.aircraftChoices.push(slot);
+    hitBoxes.aircraftChoices.push({slot,index});
     rect(...slot,active?colors.gold:colors.plum);
     type(airframe.name,x+7,y+Math.round((rowHeight-2)/2+3),Math.min(11,rowHeight-3),active?colors.ink:colors.cream);
   });
-  const w=narrow?width-30:Math.min(171,Math.floor(width*.29));
   const x=narrow?15:width-w-15, y=narrow?height-89:71;
   const kit=selectedLoadout(), projectile=selectedProjectile();
   rect(x,y,w,narrow?74:172,colors.black);
@@ -1511,12 +1979,61 @@ function drawSpray(cam) {
 }
 
 // Mission rendering. Contacts are depth-tested against the height field before rasterizing.
-const contactColors={drone:colors.red,ground:colors.ochre,lookout:colors.gold,jammer:colors.peach};
+const contactColors={
+  drone:colors.red,interceptor:colors.ochre,guardian:colors.haze,
+  ground:colors.ochre,convoy:colors.peach,relay:colors.gold,beacon:colors.cream,
+  lookout:colors.gold,jammer:colors.peach
+};
 function insideView(point,margin=0) {
   return point && point[0]>margin && point[0]<width-margin && point[1]>margin && point[1]<height-margin;
 }
+function drawBurst(effect,cam) {
+  const age=1-effect.life/effect.duration;
+  const point=project(effect.position,cam);
+  if(!insideView(point) || !clearSight(cam.eye,effect.position)) return;
+  const [x,y]=point;
+  const depth=dot(sub(effect.position,cam.eye),cam.forward);
+  const radius=clamp(height*(effect.large?15:8)/(2*cam.lens*depth),effect.large?12:5,effect.large?42:24);
+  const ring=radius*(.24+age*1.22);
+  const step=Math.PI*.25;
+  if(age<.44) {
+    let previous=[x+ring,y];
+    for(let i=1;i<=8;i++) {
+      const next=[x+Math.cos(i*step)*ring,y+Math.sin(i*step)*ring*.86];
+      line(...previous,...next,age<.14?colors.cream:colors.copper);
+      previous=next;
+    }
+  }
+  if(age<.20) {
+    const flash=radius*(.78-age*2.3);
+    const flare=Array.from({length:12},(_,i)=>{
+      const angle=i*Math.PI/6+effect.phase;
+      const arm=i%2===0?flash:flash*.33;
+      return [x+Math.cos(angle)*arm,y+Math.sin(angle)*arm];
+    });
+    polygon(flare,colors.ochre);
+    const core=Math.max(2,Math.round(flash*.43));
+    rect(x-core/2,y-core/2,core,core,colors.hot);
+  }
+  const count=effect.large?19:11;
+  for(let i=0;i<count;i++) {
+    const angle=effect.phase+i*2.39996;
+    const energy=.48+wrap(i*17,11)/16;
+    const drift=radius*(.17+age*1.41)*energy;
+    const px=x+Math.cos(angle)*drift;
+    const py=y+Math.sin(angle)*drift*.88+radius*age*age*.8;
+    if(age<.73&&i%4!==3) {
+      const length=(1-age)*(i%3+1);
+      line(px,py,px-Math.cos(angle)*length,py-Math.sin(angle)*length,age<.25?colors.hot:colors.ochre);
+    }
+    if(age>.17&&i%2===0) {
+      const side=2+Math.floor(radius*(.10+age*.21));
+      rect(px-side/2,py-side/2-radius*age*.9,side,side,pattern(i%4?colors.plum:colors.mauve,Math.max(1,Math.round(10*(1-age)))));
+    }
+  }
+}
 function drawMissionWorld(cam) {
-  if(!selectedMission || !mission) return;
+  if(!mission) return;
   for(const target of mission.targets) {
     if(!target.health) continue;
     const point=project(target.position,cam);
@@ -1524,24 +2041,58 @@ function drawMissionWorld(cam) {
     const [x,y]=point;
     const distance=length(sub(target.position,cam.eye));
     const scale=clamp(height/(distance*1.4),.8,5.4);
-    if(target.kind==='ground') {
+    if(!isAirContact(target)) {
+      const marker=contactColors[target.kind];
       rect(x-scale*2,y-scale*2,scale*4,scale*2,colors.ink);
-      rect(x-scale*2,y-scale*3,scale*4,scale,colors.ochre);
+      rect(x-scale*2,y-scale*3,scale*4,scale,marker);
       rect(x+scale*.7,y-scale*4,1,scale*2,colors.cream);
+      if(target.kind==='beacon') {
+        const reach=scale*2.6+Math.floor(simulationTime*6)%4;
+        corners(x-reach,y-reach,reach*2,reach*2,3,colors.cream);
+      }
+      if(target.kind==='convoy') {
+        rect(x-scale*3.5,y-scale*1.7,scale,scale,marker);
+        rect(x+scale*2.7,y-scale*1.7,scale,scale,marker);
+      }
       continue;
     }
     const relative=target.heading-Math.atan2(cam.forward[0],cam.forward[2]);
     const yaw=Math.sin(relative);
-    const span=scale*(target.kind==='drone'?3.1:4.4);
+    const span=scale*(target.kind==='drone'?3.1:target.kind==='interceptor'?3.7:target.kind==='guardian'?5:4.4);
     const outline=[[x-span,y+scale*.4],[x+span,y-scale*.4],[x+span*.26,y-scale*.73],
       [x+yaw*span*.43,y-scale*1.25],[x-span*.26,y+scale*.72]];
     polygon(outline,colors.ink);
     line(x-span,y,x+span,y-scale*.55,contactColors[target.kind]);
     rect(x-scale,y-scale*.35,scale*2,Math.max(1,scale*.72),colors.plum);
+    if(target.kind==='interceptor') {
+      line(x-span*.72,y+scale*.35,x+scale,y-scale*1.35,colors.peach);
+      line(x+span*.72,y+scale*.26,x-scale,y-scale*1.1,colors.ochre);
+    } else if(target.kind==='guardian') {
+      for(const side of [-1,1]) {
+        const dx=x+side*span*.38;
+        line(dx,y-scale*.18,dx+side*scale*.42,y-scale*1.22,colors.haze);
+        rect(dx-1,y+scale*.35,2,1,colors.copper);
+      }
+    } else if(target.kind==='jammer') {
+      rect(x-span*.39,y-scale*.71,span*.78,1,colors.peach);
+    }
     rect(x+span*.57,y-.5,1,1,colors.cream);
     if(target.kind==='lookout') rect(x-span*.36,y-scale*1.8,span*.72,1,colors.gold);
   }
+  if(mission.incoming) {
+    const incoming=mission.incoming;
+    const age=1-incoming.remaining/incoming.duration;
+    for(let i=5;i>=0;i--) {
+      const point=project(incomingPoint(incoming,aircraft,age-i*.016),cam);
+      if(!insideView(point)) continue;
+      rect(point[0]-1,point[1]-1,i===0?3:2,i===0?3:2,i===0?colors.hot:colors.red);
+    }
+  }
   for(const effect of mission.effects) {
+    if(effect.kind==='burst') {
+      drawBurst(effect,cam);
+      continue;
+    }
     if(effect.kind==='pulse') {
       const travel=1-effect.life/cannonTraceTime;
       const tip=project(blend(effect.origin,effect.position,Math.min(1,travel+.28)),cam);
@@ -1630,38 +2181,101 @@ function drawDamageCue() {
   rect(center-71,y-11,142,16,colors.ink);
   type(message,center,y+1,10,colors.red,'mono','center');
 }
+function radarHeading(s) {
+  const nose=rotate(s.attitude,[0,0,1]);
+  if(Math.hypot(nose[0],nose[2])>.04) return unit([nose[0],0,nose[2]]);
+  const right=rotate(s.attitude,[1,0,0]);
+  return unit([-right[2],0,right[0]]);
+}
+function radarOverview(s) {
+  const forward=radarHeading(s), right=[forward[2],0,-forward[0]];
+  function offsetFrom(point) {
+    const offset=sub(point,s.position);
+    return [dot(offset,right),-dot(offset,forward)];
+  }
+  const contacts=mission.targets.filter(target=>target.health>0)
+    .map(target=>({target,offset:offsetFrom(target.position)}));
+  const alert=mission.incoming?offsetFrom(incomingPoint(mission.incoming,s)):null;
+  const farthest=Math.max(radarRange(),...contacts.map(contact=>Math.hypot(...contact.offset)));
+  const scope=Math.ceil(farthest/250)*250;
+  return {contacts,scope,alert};
+}
+const radarMarkerOffsets=[[0,0],[4,0],[0,4],[-4,0],[0,-4],[4,4],[-4,-4],[4,-4],[-4,4],
+  [8,0],[0,8],[-8,0],[0,-8],[8,4],[4,8],[-8,4],[-4,8],[-8,-4],[-4,-8],[8,-4],[4,-8]];
 function compassRadar(s) {
   const compact=width<330;
-  const size=compact?54:67, left=width-size-13-screenInsets[1], top=screenInsets[0]+(compact?62:57);
-  const x=left+size/2, y=top+size/2, radius=size/2-5;
-  const nose=rotate(s.attitude,[0,0,1]);
-  const forward=unit([nose[0],0,nose[2]]);
-  const right=[forward[2],0,-forward[0]];
-  rect(left,top,size,size,pattern(colors.ink,13));
+  const size=compact?58:75, left=width-size-13-screenInsets[1], top=screenInsets[0]+(compact?62:57);
+  const x=Math.round(left+size/2), y=Math.round(top+size/2), radius=Math.floor(size/2)-7;
+  const {contacts,scope,alert}=radarOverview(s);
+  rect(left,top,size,size,colors.ink);
   corners(left,top,size-1,size-1,7,dim);
-  for(const span of [Math.floor(radius/2),radius]) {
+  const limit=Math.floor(radius*radarRange()/scope);
+  ctx.save();
+  ctx.beginPath();ctx.rect(left+1,top+1,size-2,size-2);ctx.clip();
+  for(const {target,offset} of contacts) {
+    if(target.kind!=='jammer') continue;
+    const jx=x+offset[0]/scope*radius, jy=y+offset[1]/scope*radius;
+    const spread=jammerRadius/scope*radius;
+    const ring=Array.from({length:12},(_,i)=>{
+      const angle=i*Math.PI/6;
+      return [jx+Math.cos(angle)*spread,jy+Math.sin(angle)*spread];
+    });
+    polygon(ring,pattern(colors.red,interfered(s)?3:2));
+    for(let i=0;i<ring.length;i+=2) line(...ring[i],...ring[(i+1)%ring.length],colors.red);
+  }
+  ctx.restore();
+  for(const span of [limit,radius]) {
+    if(span<4) continue;
     const notch=Math.round(span*.41);
     const ring=[[x-notch,y-span],[x+notch,y-span],[x+span,y-notch],[x+span,y+notch],
       [x+notch,y+span],[x-notch,y+span],[x-span,y+notch],[x-span,y-notch]];
     ring.forEach((p,i)=>line(...p,...ring[(i+1)%ring.length],colors.violet));
   }
-  const sweep=Math.floor(simulationTime*15)*.29;
-  line(x,y,x+Math.cos(sweep)*radius,y+Math.sin(sweep)*radius,colors.mauve);
+  line(x-radius,y,x+radius,y,colors.black);
+  line(x,y-radius,x,y+radius,colors.black);
+  const occupied=[[x,y]];
+  hitBoxes.radarTargets=[];
+  for(const {target,offset} of contacts) {
+    const px=Math.round(x+offset[0]/scope*radius), py=Math.round(y+offset[1]/scope*radius);
+    const adjustment=radarMarkerOffsets.find(([dx,dy])=>px+dx>=left+3&&px+dx<left+size-3&&
+      py+dy>=top+3&&py+dy<top+size-3&&occupied.every(([ox,oy])=>Math.abs(ox-px-dx)>3||Math.abs(oy-py-dy)>3))||[0,0];
+    const mx=px+adjustment[0], my=py+adjustment[1];
+    occupied.push([mx,my]);
+    hitBoxes.radarTargets.push({target,x:mx,y:my});
+    const color=contactColors[target.kind];
+    if(target===mission.locked) border(mx-3,my-3,7,7,hud);
+    if(!isAirContact(target)) border(mx-1,my-1,3,3,color);
+    else if(['drone','interceptor','guardian'].includes(target.kind)) polygon([[mx,my-2],[mx+2,my],[mx,my+2],[mx-2,my]],color);
+    else {
+      line(mx-2,my,mx+2,my,color);
+      line(mx,my-2,mx,my+2,color);
+    }
+  }
   polygon([[x,y-4],[x+3,y+2],[x-3,y+2]],colors.cream);
-  const range=radarRange();
-  for(const target of mission.targets) {
-    if(!target.health) continue;
-    const offset=sub(target.position,s.position);
-    const dx=dot(offset,right)/range, dy=-dot(offset,forward)/range;
-    if(length(offset)>range || Math.hypot(dx,dy)>1) continue;
-    const px=x+dx*radius, py=y+dy*radius;
-    if(target===mission.locked) border(px-2,py-2,5,5,hud);
-    rect(px,py,target.kind==='drone'?1:2,target.kind==='ground'?1:2,contactColors[target.kind]);
+  if(alert) {
+    const [dx,dy]=unit(alert);
+    const [ax,ay]=[x+dx*(radius+1),y+dy*(radius+1)];
+    const color=Math.floor(simulationTime*8)%2===0?colors.red:colors.hot;
+    for(let d=6;d<radius-2;d+=5) rect(ax-dx*d,ay-dy*d,1,1,color);
+    polygon([[ax-dx*5,ay-dy*5],[ax-dy*4,ay+dx*4],[ax+dy*4,ay-dx*4]],color);
   }
   rect(left,top-15,size,14,colors.ink);
-  type(supportActive('jammer')?'雷达受干扰':'雷达',left+size/2,top-5,9,hud,'mono','center');
-  rect(left,top+size+2,size,14,colors.ink);
-  type(range+' 米',left+size/2,top+size+12,9,dim,'mono','center');
+  type((interfered(s)?'干扰中 ':'雷达 ')+contacts.length,left+size/2,top-5,9,hud,'mono','center');
+  const jammer=liveJammers().length>0;
+  rect(left,top+size+2,size,jammer?33:23,colors.ink);
+  type('总览 '+scope+' 米',left+size/2,top+size+11,8,dim,'mono','center');
+  type('锁定 '+radarRange(s)+' 米',left+size/2,top+size+21,8,interfered(s)?colors.red:dim,'mono','center');
+  if(jammer) type('干扰圈 '+jammerRadius+' 米',left+size/2,top+size+30,7,colors.red,'mono','center');
+}
+function selectRadarContact(p) {
+  let nearest=null, distance=touch?10:8;
+  for(const point of hitBoxes.radarTargets||[]) {
+    const delta=Math.hypot(p[0]-point.x,p[1]-point.y);
+    if(delta<distance) {nearest=point.target;distance=delta;}
+  }
+  if(!nearest || nearest.health<=0) return false;
+  chooseTarget(nearest,true);
+  return true;
 }
 function aircraftStatusHud() {
   if(!mission) return;
@@ -1685,7 +2299,7 @@ function aircraftStatusHud() {
   const column=x+(compact?47:58), valueX=right-7, kit=selectedLoadout();
   const rows=selectedMission?[
     ['导弹',mission.tracers+' / '+kit.tracers,mission.launchTime>0?colors.hot:dim],
-    ['热诱弹',mission.decoys+' / '+kit.decoys,mission.threat>0?colors.red:dim],
+    ['热诱弹',mission.decoys+' / '+kit.decoys,mission.incoming?colors.red:dim],
     ['护盾',mission.shield+'%',hud]
   ]:[['机体',health<100?'受损':'完好',healthColor]];
   rows.forEach(([label,value,color],index)=>{
@@ -1724,7 +2338,9 @@ function missionHud(s,cam) {
       const labelX=clamp(x,62,width-62), labelY=y+radius+4;
       rect(labelX-60,labelY,120,25,colors.ink);
       type(targetNames[target.kind]+'　'+Math.round(targetRange(target))+' 米',labelX,labelY+10,9,hud,'mono','center');
-      type('耐久 '+target.health+'/'+target.maxHealth+'　'+(locked?'已锁定':Math.floor(mission.charge*100)+'%'),
+      const lockLabel=!isHostileContact(target)?'航路指引':!withinLockRange(target)?'锁定距离外':
+        locked?'已锁定':mission.lockLostTime>.36?'等待捕获':Math.floor(mission.charge*100)+'%';
+      type('耐久 '+target.health+'/'+target.maxHealth+'　'+lockLabel,
         labelX,labelY+21,9,color,'mono','center');
       rect(x-9,y-radius-4,18,2,colors.ink);
       if(mission.charge>0) rect(x-9,y-radius-4,Math.ceil(18*mission.charge),1,color);
@@ -1750,15 +2366,23 @@ function missionHud(s,cam) {
       type('目标区',x,y-7,8,dim,'mono','center');
     }
   }
-  if(mission.threat>0 || mission.noticeTime>0) {
-    const notice=mission.threat>0?'导弹来袭':mission.notice;
-    const color=mission.threat>0?colors.red:colors.cream;
-    const cx=width/2, y=compact?top+92:height/2-79, w=Math.min(width-12,170);
-    if(mission.threat===0 || Math.floor(simulationTime*8)%2===0) {
-      rect(cx-w/2,y-12,w,17,colors.ink);
-      type(notice,cx,y+1,width<235?10:11,color,'display','center');
-    }
+}
+function missionNotice(s) {
+  if(!mission || (!mission.incoming && mission.noticeTime<=0)) return;
+  const threat=mission.incoming;
+  let message=mission.notice;
+  if(threat) {
+    const direction=radarHeading(s), offset=sub(incomingPoint(threat,s),s.position);
+    const radians=Math.atan2(dot(offset,[direction[2],0,-direction[0]]),dot(offset,direction));
+    const directions=['正前','右前','右侧','右后','后方','左后','左侧','左前'];
+    const bearing=directions[wrap(Math.round(radians/(Math.PI/4)),8)];
+    message='导弹来袭 · '+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+' 秒';
   }
+  const compact=width<330, center=width/2;
+  const y=compact?screenInsets[0]+164:height/2-79, w=Math.min(width-12,188);
+  rect(center-w/2,y-12,w,17,colors.ink);
+  const color=threat&&Math.floor(simulationTime*8)%2===0?colors.red:colors.cream;
+  type(message,center,y+1,width<235?9:11,color,'display','center');
 }
 
 // Tutorial milestones are collected from launch, even when their prompt is still queued.
@@ -1844,20 +2468,22 @@ function touchHud(s) {
   type(chase?'座舱':'追尾',viewX+17,viewY+15,9,hud,'display','center');
   if(!selectedMission || paused) return;
   const buttonLabels=[['pulse','机炮'],['tracer','导弹'],['decoy','热诱'],['cycleTarget','切锁']];
-  const buttonWidth=Math.min(37,Math.floor((width-screenInsets[3]-screenInsets[1]-43)/4));
+  if(mission.config.role==='bomber') buttonLabels.push(['beaconDrop','投送']);
+  const buttonWidth=Math.min(37,Math.floor((width-screenInsets[3]-screenInsets[1]-43)/buttonLabels.length));
   const buttonY=height-screenInsets[2]-87;
   for(let index=0;index<buttonLabels.length;index++) {
     const [action,label]=buttonLabels[index], x=screenInsets[3]+10+buttonWidth*index;
     hitBoxes[action]=[x,buttonY,buttonWidth-2,17];
     rect(x,buttonY,buttonWidth-2,17,pattern(colors.ink,14));
-    border(x,buttonY,buttonWidth-2,17,action==='decoy'&&mission.threat>0?colors.red:dim);
+    border(x,buttonY,buttonWidth-2,17,action==='decoy'&&mission.incoming?colors.red:dim);
     type(label,x+(buttonWidth-2)/2,buttonY+12,10,hud,'display','center');
   }
 }
 
 // Audio voices share a compressor and open only on the launch gesture.
 let audio=null;
-const cueTones={pulse:[164,.066,.055],tracer:[292,.19,.073],decoy:[508,.15,.053],lock:[740,.10,.042]};
+const cueTones={pulse:[164,.066,.055],tracer:[292,.19,.073],decoy:[508,.15,.053],
+  lock:[740,.10,.042],incoming:[930,.23,.058],impact:[113,.36,.088]};
 function playCue(name) {
   if(!audio || paused || document.hidden) return;
   const [frequency,duration,volume]=cueTones[name], {context,master}=audio;
@@ -1951,13 +2577,13 @@ function readCheckpoint() {
 }
 function saveCheckpoint() {
   if(!flying || !mission) return;
-  const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,threat,recoveryTime}=mission;
+  const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime}=mission;
   const snapshot={
     version:1, model:selectedAircraft, level:selectedMission, time:simulationTime, chase,
     flight:aircraft, targets:mission.targets, lock:mission.targets.indexOf(mission.locked), charge:mission.charge,
     effects:mission.effects.filter(effect=>effect.kind==='tracer').map(({target,...effect})=>
       ({...effect,targetIndex:mission.targets.indexOf(target)})),
-    status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,threat,recoveryTime},
+    status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,campaign:mission.campaign},
     tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]}
   };
   const encoded=JSON.stringify(snapshot);
@@ -1976,6 +2602,10 @@ function resumeCheckpoint() {
   aircraft=snapshot.flight;previous=aircraft;
   chase=Boolean(snapshot.chase);viewBlend=viewFrom=Number(chase);viewElapsed=.35;
   Object.assign(mission,snapshot.status);
+  if(!Object.hasOwn(snapshot.status,'campaign')) mission.campaign=null;
+  if(!Array.isArray(mission.incoming?.origin) || mission.incoming.origin.length!==3 ||
+    !mission.incoming.origin.every(Number.isFinite) || !(mission.incoming.remaining>0) ||
+    !(mission.incoming.duration>=mission.incoming.remaining)) mission.incoming=null;
   mission.targets=snapshot.targets;
   mission.locked=mission.targets[snapshot.lock]||null;
   mission.charge=snapshot.charge;
@@ -1993,6 +2623,8 @@ addEventListener('pagehide',saveCheckpoint);
 // Input. All coordinates and hit areas are measured on the pixel canvas.
 function launch() {
   if(!ready||flying) return;
+  fitAircraftToMission();
+  briefing=false;
   flying=true;paused=false;simulationTime=0;
   chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
   resetFlight();startAudio();
@@ -2000,7 +2632,10 @@ function launch() {
   saveCheckpoint();
 }
 function changeAircraft(direction) {
-  if(ready&&!flying) selectedAircraft=wrap(selectedAircraft+direction,aircraftModels.length);
+  if(!ready||flying) return;
+  const choices=compatibleAircraft();
+  if(!choices.length) return;
+  selectedAircraft=choices[wrap(choices.indexOf(selectedAircraft)+direction,choices.length)];
 }
 function returnToTitle() {
   if(!paused || !flying) return;
@@ -2014,13 +2649,32 @@ function togglePause() {
   if(paused) saveCheckpoint();
   sound(aircraft);
 }
+function restartMission() {
+  if(!flying) return;
+  paused=false;
+  simulationTime=0;
+  keys.delete('KeyJ');keys.delete('KeyK');keys.delete('KeyL');combatPointers.clear();
+  resetFlight();
+  resetMission();
+  saveCheckpoint();
+  notifyMission('任务重新开始 · 装备已补满');
+}
+function openNextChapter() {
+  if(!flying||!mission?.campaign||!mission.complete||mission.config.next===undefined) return;
+  const next=mission.config.next;
+  paused=true;
+  returnToTitle();
+  selectedMission=next;
+  fitAircraftToMission();
+  briefing=true;
+}
 function toggleHangar() {
-  if(ready&&!flying) {hangar=!hangar;hangarDrag=null;}
+  if(ready&&!flying) {briefing=false;hangar=!hangar;hangarDrag=null;}
 }
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
 const actionKeys=new Set(['Enter','Escape','KeyC','KeyR','KeyP','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Backspace',
-  'KeyJ','KeyK','KeyL','KeyT','KeyH']);
+  'KeyJ','KeyK','KeyL','KeyT','KeyH','KeyB','KeyG','KeyN']);
 addEventListener('keydown',event=>{
   if(event.metaKey || !flightKeys.has(event.code)&&!actionKeys.has(event.code)) return;
   if(event.ctrlKey&&!flying&&!event.code.startsWith('Control')) return;
@@ -2029,26 +2683,31 @@ addEventListener('keydown',event=>{
   if(event.repeat) return;
   if(event.code==='Enter') {
     if(hangar) toggleHangar();
+    else if(briefing) launch();
     else if(paused&&flying) togglePause();
     else if(!flying&&checkpoint) resumeCheckpoint();
     else launch();
   }
-  if(event.code==='ArrowLeft' || event.code==='ArrowRight') changeAircraft(event.code==='ArrowLeft'?-1:1);
-  if(event.code==='ArrowUp' || event.code==='ArrowDown') changeMission(event.code==='ArrowUp'?-1:1);
+  if(!briefing && (event.code==='ArrowLeft' || event.code==='ArrowRight')) changeAircraft(event.code==='ArrowLeft'?-1:1);
+  if(!briefing && !hangar && (event.code==='ArrowUp' || event.code==='ArrowDown')) changeMission(event.code==='ArrowUp'?-1:1);
   if(event.code==='Backspace') returnToTitle();
   if(event.code==='Escape') {
     if(hangar) toggleHangar();
+    else if(briefing) toggleBriefing();
     else if(flying) togglePause();
     else skipTutorial();
   }
   if(event.code==='KeyH') toggleHangar();
+  if(event.code==='KeyG'&&!hangar) toggleBriefing();
+  if(event.code==='KeyN') openNextChapter();
   if(event.code==='KeyC') toggleView();
-  if(event.code==='KeyR'&&flying) {resetFlight();resetMission();saveCheckpoint();}
+  if(event.code==='KeyR') restartMission();
   if(event.code==='KeyP'&&flying) togglePause();
-  if(flying&&!paused && event.code==='KeyT') cycleTarget();
+  if(flying&&!paused && event.code==='KeyT') cycleTarget(true);
   if(flying&&!paused && event.code==='KeyL') dropDecoy();
   if(flying&&!paused && event.code==='KeyJ') firePulse();
   if(flying&&!paused && event.code==='KeyK') fireTracer();
+  if(flying&&!paused && event.code==='KeyB') deliverBeacon();
 });
 addEventListener('keyup',event=>keys.delete(event.code));
 addEventListener('blur',()=>{
@@ -2074,8 +2733,8 @@ glass.addEventListener('pointerdown',event=>{
   if(hangar) {
     if(inside(p,hitBoxes.closeHangar)) toggleHangar();
     else {
-      const choice=hitBoxes.aircraftChoices?.findIndex(box=>inside(p,box))??-1;
-      if(choice>=0) selectedAircraft=choice;
+      const choice=hitBoxes.aircraftChoices?.find(entry=>inside(p,entry.slot));
+      if(choice) selectedAircraft=choice.index;
       else {
         hangarDrag={id:event.pointerId,point:p};
         glass.setPointerCapture(event.pointerId);
@@ -2083,10 +2742,16 @@ glass.addEventListener('pointerdown',event=>{
     }
     return;
   }
+  if(briefing) {
+    if(inside(p,hitBoxes.closeBrief)) toggleBriefing();
+    else if(inside(p,hitBoxes.executeBrief)) launch();
+    return;
+  }
   if(!flying) {
     if(inside(p,hitBoxes.launch)) launch();
     else if(inside(p,hitBoxes.resumeCheckpoint)) resumeCheckpoint();
     else if(inside(p,hitBoxes.hangar)) toggleHangar();
+    else if(inside(p,hitBoxes.campaignBrief)) toggleBriefing();
     else if(inside(p,hitBoxes.previousAircraft)) changeAircraft(-1);
     else if(inside(p,hitBoxes.nextAircraft)) changeAircraft(1);
     else if(inside(p,hitBoxes.previousMission)) changeMission(-1);
@@ -2095,8 +2760,12 @@ glass.addEventListener('pointerdown',event=>{
   }
   if(inside(p,hitBoxes.returnToTitle)) {returnToTitle();return;}
   if(inside(p,hitBoxes.pause) || inside(p,hitBoxes.continueFlight)) {togglePause();return;}
+  if(inside(p,hitBoxes.restartMission)) {restartMission();return;}
   if(paused) return;
-  if(inside(p,hitBoxes.cycleTarget)) {cycleTarget();return;}
+  if(inside(p,hitBoxes.nextChapter)) {openNextChapter();return;}
+  if(inside(p,hitBoxes.beaconDrop)) {deliverBeacon();return;}
+  if(selectRadarContact(p)) return;
+  if(inside(p,hitBoxes.cycleTarget)) {cycleTarget(true);return;}
   if(inside(p,hitBoxes.decoy)) {dropDecoy();return;}
   if(inside(p,hitBoxes.pulse) || inside(p,hitBoxes.tracer)) {
     const action=inside(p,hitBoxes.pulse)?'pulse':'tracer';
@@ -2124,8 +2793,10 @@ glass.addEventListener('pointermove',event=>{
     hangarDrag.point=p;
   }
   const overButton=['launch','resumeCheckpoint','hangar','closeHangar','previousAircraft','nextAircraft',
-    'previousMission','nextMission','pause','continueFlight','returnToTitle']
-    .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(box=>inside(p,box));
+    'previousMission','nextMission','pause','continueFlight','restartMission','returnToTitle',
+    'campaignBrief','closeBrief','executeBrief','nextChapter','beaconDrop']
+    .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(entry=>inside(p,entry.slot)) ||
+    hitBoxes.radarTargets?.some(point=>Math.hypot(p[0]-point.x,p[1]-point.y)<8);
   glass.style.cursor=overButton?'pointer':hangar?(hangarDrag?'grabbing':'grab'):flying&&!touch&&!paused?'crosshair':'default';
   if(event.pointerId===throttlePointer) throttleAt(p[1]);
   if(drag?.id===event.pointerId) {
@@ -2193,7 +2864,7 @@ function draw(now) {
   if(!flying) {
     if(hangar) {hangarScreen(realTime);return;}
     if(renderWorld) renderWorld(titleCamera(realTime),realTime,null);
-    titleScreen(realTime);
+    if(briefing) campaignBriefing(); else titleScreen(realTime);
     return;
   }
   if(!paused) {
@@ -2216,6 +2887,8 @@ function draw(now) {
   if(canopyCoverage<16) edgeVignette();
   flightHud(s,cam,simulationTime);
   missionHud(s,cam);
+  campaignHud(s);
+  missionNotice(s);
   aircraftStatusHud();
   drawWeaponFeedback(s,cam);
   drawDamageCue();
@@ -2224,15 +2897,16 @@ function draw(now) {
   const pauseWidth=touch?30:43;
   canvasButton('pause',paused?'继续':'暂停',width-screenInsets[1]-pauseWidth-10,screenInsets[0]+8,pauseWidth,18,false,10);
   if(paused) {
-    const center=width/2, y=height/2-54;
-    rect(center-78,y,156,108,colors.ink);
-    corners(center-78,y,155,107,8,dim);
+    const center=width/2, y=height/2-66;
+    rect(center-78,y,156,132,colors.ink);
+    corners(center-78,y,155,131,8,dim);
     type('暂停',center,y+18,14,hud,'display','center');
     const kit=selectedLoadout();
     type(selectedModel().name+' · '+missionInfo().name,center,y+31,9,dim,'mono','center');
     type('机炮 '+kit.cannon+' 点 · 锁定 '+kit.lockTime.toFixed(2)+' 秒',center,y+44,9,dim,'mono','center');
     canvasButton('continueFlight','继续飞行',center-60,y+53,120,20,true,11);
-    canvasButton('returnToTitle','保存并退出',center-60,y+78,120,20,false,11);
+    canvasButton('restartMission','重开本关',center-60,y+77,120,20,false,11);
+    canvasButton('returnToTitle','保存并退出',center-60,y+101,120,20,false,11);
   }
   if(realTime-audioTime>.038) {sound(s);audioTime=realTime;}
 }
