@@ -328,6 +328,7 @@ layout(location=2) in vec2 material;
 uniform vec3 jetPosition,eye;
 uniform mat3 attitude,view;
 uniform vec2 resolution,control;
+uniform vec2 screenOffset;
 uniform float lens,thrust;
 out vec3 worldNormal;
 out float viewDepth;
@@ -345,7 +346,8 @@ void main(){
   vec3 camera=transpose(view)*(jetPosition+attitude*p-eye);
   worldNormal=attitude*n;
   viewDepth=camera.z;
-  gl_Position=vec4(camera.x*resolution.y/resolution.x/lens,camera.y/lens,camera.z-.10,camera.z);
+  gl_Position=vec4(camera.x*resolution.y/resolution.x/lens+camera.z*screenOffset.x,
+    camera.y/lens+camera.z*screenOffset.y,camera.z-.10,camera.z);
 }`;
 const jetFragment=shaderCommon+`
 in vec3 worldNormal;
@@ -370,8 +372,13 @@ void main(){
     else if(paint==5.) color=ramp(plum,mauve,peach,cream,light);
     else if(paint==8.) color=ramp(indigo,slate,violet,haze,light);
     else if(paint==9.) color=ramp(ink,slate,mauve,haze,light);
+    else if(paint==10.) color=ramp(ink,slate,violet,mauve,light);
+    else if(paint==11.) color=ramp(violet,mauve,peach,cream,light);
+    else if(paint==12.) color=red;
+    else if(paint==13.) color=cream;
+    else if(paint==14.) color=ramp(indigo,violet,copper,gold,light);
     else color=ramp(slate,mauve,peach,cream,light);
-    if(paint!=4. && dot(n,normalize(sun-forward))>.79) color=paint==3.?peach:hot;
+    if(paint!=4. && paint<12. && dot(n,normalize(sun-forward))>.84) color=paint==3.?peach:hot;
   }
   gl_FragDepth=depthFor(viewDepth);
   pixel=vec4(color,1.);
@@ -409,6 +416,14 @@ const loadouts=[
 ].map(([era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime])=>
   ({era,cannon,cannonInterval,tracerDamage,tracers,decoys,lockTime}));
 const selectedLoadout=()=>loadouts[selectedAircraft];
+const projectileFamilies=[
+  {name:'白鹭',style:'直线曳光',duration:.90,arc:0,glow:colors.gold},
+  {name:'流萤',style:'弧线曳光',duration:1.04,arc:8,glow:colors.peach},
+  {name:'弦月',style:'跃升曳光',duration:1.12,arc:17,glow:colors.cream}
+];
+const projectileAssignment=[0,1,0,0,1,1,2,0,1,2];
+const selectedProjectile=()=>projectileFamilies[projectileAssignment[selectedAircraft]];
+const cannonTraceTime=.34;
 
 function jetGeometry(model) {
   const data=[];
@@ -419,30 +434,43 @@ function jetGeometry(model) {
   function quad(a,b,c,d,paint,part) {
     tri(a,b,c,paint,part); tri(a,c,d,paint,part);
   }
-  const nose=[0,.03,model.nose], ridge=[0,.48,1.52], belly=[0,-.42,1.35];
-  const stern=[0,.26,-2.63], base=[0,-.34,-2.63];
   const [leading,tipLead,tipTrail,trailing,span]=model.wing;
   for(const side of [-1,1]) {
     const p=(x,y,z)=>[side*x,y,z];
     const face=(a,b,c,paint,part)=>side>0?tri(a,c,b,paint,part):tri(a,b,c,paint,part);
     const plate=(a,b,c,d,paint,part)=>{face(a,b,c,paint,part);face(a,c,d,paint,part);};
-    const shoulder=p(model.hull,.06,1.38), rear=p(model.hull*.96,-.01,-2.58);
-    if(model.intake || model.duckbill) {
-      const rim=p(model.intake?.23:.46,.03,model.nose-.17);
-      const cap=[0,model.intake?.25:.14,model.nose-.17];
-      face(cap,ridge,shoulder,model.paint);
-      face(cap,shoulder,rim,model.paint);
-      face(rim,shoulder,belly,model.paint);
-      face(rim,belly,[0,-.19,model.nose-.17],model.paint);
-      face(nose,cap,rim,model.intake?4:model.trim);
-      face(nose,rim,[0,-.19,model.nose-.17],model.intake?4:model.paint);
-    } else {
-      face(nose,ridge,shoulder,model.paint);
-      face(nose,shoulder,belly,model.paint);
+    const section=(z,halfWidth,top,bottom,waist=0)=>[
+      p(0,top,z),p(halfWidth*.57,top*.78+waist*.22,z),p(halfWidth,waist,z),
+      p(halfWidth*.68,bottom*.72+waist*.28,z),p(0,bottom,z)
+    ];
+    const blunt=model.intake?.22:model.duckbill?.41:.035;
+    const fuselage=[
+      section(model.nose,blunt,model.intake?.27:.10,-.12,.035),
+      section(model.nose-.31,blunt+.15,.21,-.22),
+      section(2.03,model.hull*.61,.41,-.34),
+      section(.97,model.hull,.51,-.47,.045),
+      section(-.75,model.hull*1.06,.48,-.46,.015),
+      section(-2.55,model.hull*.92,.25,-.33)
+    ];
+    for(let i=1;i<fuselage.length;i++) {
+      const front=fuselage[i-1], rear=fuselage[i];
+      for(let j=0;j<4;j++) {
+        const paint=i===1?model.trim:j===1?11:j===3?10:model.paint;
+        plate(front[j],rear[j],rear[j+1],front[j+1],paint);
+      }
     }
-    plate(ridge,stern,rear,shoulder,model.paint);
-    plate(belly,shoulder,rear,base,model.paint);
-    face(stern,base,rear,4);
+    const ringFace=fuselage[0], rearFace=fuselage[fuselage.length-1];
+    for(let j=0;j<4;j++) {
+      face(ringFace[j],ringFace[j+1],[0,.01,model.nose+.012],model.intake?4:model.trim);
+      face(rearFace[j+1],rearFace[j],[0,0,-2.56],4);
+    }
+    if(model.intake) face(p(.11,.17,model.nose+.028),p(.18,-.03,model.nose+.04),[0,.02,model.nose+.25],model.paint);
+    // Two slightly proud strips break up the fuselage near the canopy and rear deck.
+    const panel=(a,b,c,d)=>plate(a,b,c,d,10);
+    panel(p(model.hull*.70,.20,1.83),p(model.hull*.89,.235,.47),
+      p(model.hull*.90,.21,.47),p(model.hull*.71,.173,1.83));
+    panel(p(model.hull*.48,.345,-1.48),p(model.hull*.48,.294,-2.07),
+      p(model.hull*.57,.272,-2.07),p(model.hull*.57,.316,-1.48));
     const root=p(model.hull*.72,.02,leading), rootBack=p(model.hull*.72,.02,trailing);
     const tip=p(span,.055,tipLead), tipBack=p(span*.98,.03,tipTrail);
     const band=blend(root,tip,.70), bandBack=blend(rootBack,tipBack,.70);
@@ -450,6 +478,17 @@ function jetGeometry(model) {
     plate(rootBack,bandBack,band,root,model.paint);
     plate(bandBack,bandEndBack,bandEnd,band,5);
     plate(bandEndBack,tipBack,tip,bandEnd,model.trim);
+    const wingBottom=v=>add(v,[0,-.10,0]);
+    plate(root,tip,wingBottom(tip),wingBottom(root),11);
+    plate(tip,tipBack,wingBottom(tipBack),wingBottom(tip),10);
+    plate(wingBottom(root),wingBottom(tip),wingBottom(tipBack),wingBottom(rootBack),model.paint);
+    const wingLineA=blend(blend(root,rootBack,.73),blend(tip,tipBack,.73),.30);
+    const wingLineB=blend(blend(root,rootBack,.73),blend(tip,tipBack,.73),.90);
+    panel(add(wingLineA,[0,.011,0]),add(wingLineB,[0,.011,0]),
+      add(wingLineB,[0,.011,-.038]),add(wingLineA,[0,.011,-.038]));
+    plate(add(tip,[0,.016,0]),add(blend(tip,tipBack,.27),[0,.018,0]),
+      add(blend(blend(tip,tipBack,.27),rootBack,.09),[0,.018,0]),
+      add(blend(tip,root,.09),[0,.016,0]),side<0?12:13);
     plate(p(model.hull+.13,.024,trailing-.42),p(span*.85,.03,tipTrail-.24),bandBack,rootBack,4,side<0?1:2);
     if(model.stabilizers) plate(p(model.hull,.08,-1.46),p(model.hull,.08,-2.74),
       p(span*.52,.11,-2.96),p(span*.51,.11,-2.40),model.trim);
@@ -457,11 +496,24 @@ function jetGeometry(model) {
       p(span*.56,.16,1.14),p(span*.51,.16,1.55),model.trim);
     if(model.strakes) face(p(model.hull*.54,.15,2.48),root,tip,model.trim);
     if(model.chin) face(p(.52,-.48,1.12),p(.43,-.19,1.42),[0,-.48,1.48],4);
+    if(model.engines===2) {
+      const throat=p(model.hull*.91,-.25,1.15);
+      const outer=p(model.hull*1.20,.085,1.09);
+      const intakeTop=p(model.hull*.61,.17,1.24);
+      const rearTop=p(model.hull*.85,.19,-2.36);
+      plate(outer,p(model.hull*1.05,.03,-2.39),rearTop,intakeTop,model.paint);
+      plate(throat,p(model.hull*.91,-.33,-2.36),p(model.hull*1.05,.03,-2.39),outer,10);
+      face(throat,outer,intakeTop,4);
+      face(add(throat,[0,.07,.012]),add(outer,[-side*.12,-.022,.013]),
+        add(intakeTop,[side*.09,-.012,.017]),10);
+    }
     const [finRoot,cant,finHeight]=model.fins;
     if(finRoot>0 || side===1) {
       const tailFront=p(finRoot,.13,-1.15), tailTip=p(finRoot+cant,finHeight,-1.86);
       const tailEnd=p(finRoot+cant,finHeight,-2.26), tailBase=p(finRoot,.12,-2.66);
-      plate(tailFront,tailTip,tailEnd,tailBase,model.trim);
+      const spine=add(blend(tailFront,tailBase,.54),[side*.09,.08,0]);
+      face(tailFront,tailTip,spine,model.trim);
+      plate(spine,tailTip,tailEnd,tailBase,model.paint);
       const stripe=blend(tailBase,tailEnd,.70), edge=blend(tailFront,tailTip,.70);
       const nudged=v=>add(v,[side*.012,0,0]);
       plate(nudged(stripe),nudged(edge),nudged(blend(tailFront,tailTip,.82)),nudged(blend(tailBase,tailEnd,.82)),5);
@@ -469,21 +521,30 @@ function jetGeometry(model) {
     const glassFront=[0,.49,model.duckbill?2.13:1.64], glassTop=[0,.84,model.duckbill?1.21:.79],
       glassBack=[0,.37,model.tandem?-1.15:model.duckbill?-.54:-.42];
     const glassSide=p(model.duckbill?.58:model.hull*.56,.34,model.tandem?-.01:.37);
-    face(glassFront,glassTop,glassSide,3);
-    face(glassTop,glassBack,glassSide,3);
+    const brow=add(blend(glassFront,glassTop,.62),[side*model.hull*.29,.024,-.045]);
+    const backRim=add(blend(glassTop,glassBack,.42),[side*model.hull*.30,.006,-.075]);
+    face(glassFront,glassTop,brow,3);
+    plate(glassTop,glassBack,backRim,brow,3);
+    face(glassFront,brow,glassSide,3);
+    plate(brow,backRim,glassBack,glassSide,3);
+    const frameA=add(blend(brow,backRim,.68),[side*.018,.014,0]);
+    const frameB=add(blend(glassSide,glassBack,.45),[side*.018,.013,0]);
+    plate(frameA,frameB,add(frameB,[0,0,-.065]),add(frameA,[0,0,-.065]),11);
     const lip=add(glassSide,[side*.04,-.03,-.04]);
     face(glassFront,glassSide,lip,5);
     face(glassSide,glassBack,lip,4);
   }
   for(const center of model.engines===1?[0]:[-model.hull*.56,model.hull*.56]) {
-    const count=model.square?4:6, radius=model.engines===1?.41:.31;
+    const count=model.square?4:8, radius=model.engines===1?.41:.31;
     const ring=(point,z,scale)=> {
       const angle=(point+(model.square?.5:0))*Math.PI*2/count;
       return [center+Math.cos(angle)*radius*scale,Math.sin(angle)*radius*scale-.07,z];
     };
     for(let point=0;point<count;point++) {
-      quad(ring(point,-2.35,1.15),ring(point,-2.72,1),ring(point+1,-2.72,1),ring(point+1,-2.35,1.15),4);
-      tri(ring(point,-2.72,1),ring(point+1,-2.72,1),[center,-.07,-2.75],4);
+      quad(ring(point,-1.83,1.09),ring(point,-2.35,1.15),ring(point+1,-2.35,1.15),ring(point+1,-1.83,1.09),model.paint);
+      quad(ring(point,-2.35,1.15),ring(point,-2.66,1),ring(point+1,-2.66,1),ring(point+1,-2.35,1.15),point%2?10:14);
+      quad(ring(point,-2.66,1),ring(point,-2.73,.78),ring(point+1,-2.73,.78),ring(point+1,-2.66,1),14);
+      tri(ring(point,-2.73,.78),ring(point+1,-2.73,.78),[center,-.07,-2.752],4);
       tri(ring(point,-2.72,.89),ring(point+1,-2.72,.89),[center,-.07,-6.7],6,3);
       tri(ring(point,-2.73,.46),ring(point+1,-2.73,.46),[center,-.07,-5.6],7,3);
     }
@@ -496,7 +557,8 @@ const airplanePreviews=airframeMeshes.map(mesh=>{
   for(let start=0;start<mesh.length;start+=24) {
     if(mesh[start+7]===3 || mesh[start+4]<-.06) continue;
     const vertices=[0,8,16].map(offset=>Array.from(mesh.subarray(start+offset,start+offset+3)));
-    const color=['peach','copper','haze','indigo','slate','cream',null,null,'mauve','haze'][mesh[start+6]];
+    const color=['peach','copper','haze','indigo','slate','cream',null,null,'mauve','haze',
+      'slate','peach','red','cream','copper'][mesh[start+6]];
     const height=vertices.reduce((total,vertex)=>total+vertex[1],0)/3;
     faces.push({vertices,color,height});
   }
@@ -538,7 +600,7 @@ function setupGraphics() {
     gl.bindVertexArray(screenVao);
     gl.depthFunc(gl.ALWAYS);
     gl.uniform1i(u.field,0);
-    gl.uniform2f(u.resolution,width,height);
+    gl.uniform2f(u.resolution,world.width,world.height);
     gl.uniform3fv(u.eye,eye); gl.uniform3fv(u.right,right); gl.uniform3fv(u.up,up); gl.uniform3fv(u.forward,forward);
     gl.uniform3f(u.shadowCenter,center[0],surface,center[2]);
     gl.uniform1f(u.shadowHeight,aircraft?center[1]-surface:-1);
@@ -548,7 +610,7 @@ function setupGraphics() {
     gl.uniform1i(u.titleView,!aircraft);
     gl.drawArrays(gl.TRIANGLES,0,3);
   };
-  renderJet=(camera,aircraft,time,visibility)=>{
+  renderJet=(camera,aircraft,time,visibility,screenOffset=[0,0])=>{
     if(visibility<=0) return;
     const u=jet.uniform;
     gl.useProgram(jet.id);
@@ -557,7 +619,8 @@ function setupGraphics() {
     gl.uniform3fv(u.jetPosition,aircraft.position); gl.uniform3fv(u.eye,camera.eye);
     gl.uniformMatrix3fv(u.attitude,false,basisOf(aircraft.attitude).flat());
     gl.uniformMatrix3fv(u.view,false,[...camera.right,...camera.up,...camera.forward]);
-    gl.uniform2f(u.resolution,width,height);
+    gl.uniform2f(u.resolution,world.width,world.height);
+    gl.uniform2fv(u.screenOffset,screenOffset);
     gl.uniform2f(u.control,aircraft.stick[0],aircraft.stick[1]);
     gl.uniform1f(u.lens,camera.lens); gl.uniform1f(u.thrust,aircraft.thrust);
     gl.uniform3fv(u.forward,camera.forward); gl.uniform1f(u.flicker,Math.floor(time*18)%2);
@@ -575,7 +638,7 @@ function setupGraphics() {
       terrainReady=true;
     },
     compileJet() {
-      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control lens thrust forward flicker visibility');
+      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset lens thrust forward flicker visibility');
     }
   };
 }
@@ -596,8 +659,17 @@ function rotate(q,v) {
 }
 const basisOf = q => [[1,0,0],[0,1,0],[0,0,1]].map(v=>rotate(q,v));
 function blendAttitude(a,b,t) {
-  const hemisphere=a.reduce((sum,v,i)=>sum+v*b[i],0)<0?-1:1;
-  return unit(blend(a,mul(b,hemisphere),t));
+  let cosine=a.reduce((sum,v,i)=>sum+v*b[i],0);
+  const target=cosine<0?mul(b,-1):b;
+  cosine=clamp(Math.abs(cosine),0,1);
+  if(cosine>.9995) return unit(blend(a,target,t));
+  const angle=Math.acos(cosine);
+  return add(mul(a,Math.sin((1-t)*angle)/Math.sin(angle)),mul(target,Math.sin(t*angle)/Math.sin(angle)));
+}
+function integrateAttitude(attitude,angularVelocity,dt) {
+  const rate=length(angularVelocity);
+  // Multiplication on the right applies the quaternion increment in aircraft coordinates.
+  return rate<1e-7?attitude:unit(quatMultiply(attitude,axisAngle(mul(angularVelocity,1/rate),rate*dt)));
 }
 const bankOf = ([right,up]) => Math.atan2(-right[1],up[1]);
 const keys = new Set();
@@ -633,8 +705,11 @@ function changeMission(direction) {
 function resetMission() {
   const config=missionInfo();
   const kit=selectedLoadout();
-  mission={config,...kit,targets:[],effects:[],locked:null,
-    charge:0,pulseTime:0,tracerTime:0,threat:0,warningTime:5,shield:100,points:0,complete:false,notice:'',noticeTime:0};
+  mission={config,...kit,targets:[],effects:[],locked:null,charge:0,
+    pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,threat:0,warningTime:5,
+    shield:100,integrity:100,damageFlash:0,recoveryTime:0,damageReason:'',
+    zones:{body:100,left:100,right:100,tail:100},
+    points:0,complete:false,notice:'',noticeTime:0};
   if(selectedMission===0) return;
   function target(kind,position,health,phase) {
     return {kind,position:position.slice(),center:position.slice(),health,phase,
@@ -675,6 +750,39 @@ function cycleTarget() {
 function notifyMission(message) {
   mission.notice=message;mission.noticeTime=1.8;
 }
+function damageAircraft(amount,reason) {
+  if(!mission || mission.recoveryTime>0) return;
+  const absorbed=reason==='来袭命中'?Math.min(mission.shield,Math.floor(amount*.6)):0;
+  const damage=amount-absorbed;
+  mission.shield-=absorbed;
+  mission.integrity=Math.max(0,mission.integrity-damage);
+  const zone=reason==='来袭命中'?['left','tail','right'][Math.floor(simulationTime)%3]:
+    Math.abs(aircraft.bank)>.28?(aircraft.bank>0?'right':'left'):'body';
+  mission.zones[zone]=Math.max(0,mission.zones[zone]-damage*2);
+  mission.damageFlash=.76;
+  mission.damageReason=reason;
+  if(mission.integrity===0) {
+    mission.recoveryTime=1.5;
+    mission.threat=0;
+  }
+}
+function updateAircraftDamage(dt) {
+  if(!mission) return;
+  mission.damageFlash=Math.max(0,mission.damageFlash-dt);
+  if(mission.recoveryTime<=0) return;
+  mission.recoveryTime=Math.max(0,mission.recoveryTime-dt);
+  if(mission.recoveryTime===0) {
+    const pendingTime=accumulator;
+    resetFlight();
+    accumulator=pendingTime;
+    mission.shield=100;
+    mission.integrity=100;
+    Object.keys(mission.zones).forEach(zone=>{mission.zones[zone]=100;});
+    mission.damageFlash=0;
+    mission.warningTime=5;
+    notifyMission('机体已复位');
+  }
+}
 function dropDecoy() {
   if(!mission || selectedMission===0 || mission.complete || mission.decoys<=0) return;
   mission.decoys--;
@@ -697,11 +805,13 @@ function scoreHit(target,damage) {
       mission.complete=true;mission.threat=0;
       notifyMission('任务完成 · 按暂停返回选关');
     }
+    saveCheckpoint();
   }
 }
 function firePulse() {
-  if(!mission || !selectedMission || mission.complete || mission.pulseTime>0) return;
+  if(!mission || !selectedMission || mission.complete || mission.recoveryTime>0 || mission.pulseTime>0) return;
   mission.pulseTime=mission.cannonInterval;
+  mission.muzzleTime=.42;
   playCue('pulse');
   const nose=rotate(aircraft.attitude,[0,0,1]);
   let best=null, bestAlignment=.994;
@@ -712,39 +822,57 @@ function firePulse() {
     const alignment=dot(nose,unit(offset));
     if(alignment>bestAlignment&&clearSight(aircraft.position,target.position)) {bestAlignment=alignment;best=target;}
   }
-  mission.effects.push({origin:aircraft.position.slice(),position:best?best.position.slice():
-    add(aircraft.position,mul(nose,205)),life:.095,kind:'pulse'});
+  const muzzle=rotate(aircraft.attitude,[.9,-.18,1.35]);
+  const muzzleOrigin=add(aircraft.position,muzzle);
+  mission.effects.push({origin:muzzleOrigin,position:best?best.position.slice():
+    add(muzzleOrigin,mul(nose,205)),life:cannonTraceTime,kind:'pulse'});
   if(best) scoreHit(best,mission.cannon);
 }
 function fireTracer() {
-  if(!mission || !selectedMission || mission.complete || mission.tracerTime>0) return;
+  if(!mission || !selectedMission || mission.complete || mission.recoveryTime>0 || mission.tracerTime>0) return;
   mission.tracerTime=.32;
-  if(mission.tracers<=0) {notifyMission('追踪弹已用尽');return;}
-  if(!mission.locked || mission.charge<1) {notifyMission('等待锁定');return;}
+  if(mission.tracers<=0) {notifyMission('导弹已用尽');return;}
+  if(!mission.locked || mission.charge<1) {
+    notifyMission('等待目标锁定');
+    return;
+  }
   mission.tracers--;
   playCue('tracer');
+  notifyMission('导弹发射 · 剩余 '+mission.tracers+' 枚');
   mission.tracerTime=.85;
-  const effect={origin:aircraft.position.slice(),target:mission.locked,life:.62,kind:'tracer'};
+  mission.launchTime=.45;
+  const launchSide=mission.tracers%2?1:-1;
+  const origin=add(aircraft.position,rotate(aircraft.attitude,[launchSide*1.5,-.4,.75]));
+  const model=selectedProjectile();
+  const effect={origin,target:mission.locked,life:model.duration,duration:model.duration,arc:model.arc,kind:'tracer'};
   effect.position=effect.origin;
   mission.effects.push(effect);
+}
+function projectilePoint(effect,progress) {
+  const t=clamp(progress,0,1);
+  const position=blend(effect.origin,effect.target.position,smooth(t));
+  position[1]+=Math.sin(t*Math.PI)*effect.arc;
+  return position;
 }
 function updateMission(dt) {
   if(!mission || !selectedMission) return;
   const {config}=mission;
   mission.pulseTime=Math.max(0,mission.pulseTime-dt);
   mission.tracerTime=Math.max(0,mission.tracerTime-dt);
+  mission.muzzleTime=Math.max(0,mission.muzzleTime-dt);
+  mission.launchTime=Math.max(0,mission.launchTime-dt);
   mission.noticeTime=Math.max(0,mission.noticeTime-dt);
   for(let i=mission.effects.length-1;i>=0;i--) {
     const effect=mission.effects[i];
     effect.life-=dt;
     if(effect.life>0) {
-      if(effect.kind==='tracer') effect.position=blend(effect.origin,effect.target.position,smooth(1-effect.life/.62));
+      if(effect.kind==='tracer') effect.position=projectilePoint(effect,1-effect.life/effect.duration);
     } else {
       mission.effects.splice(i,1);
       if(effect.kind==='tracer') scoreHit(effect.target,mission.tracerDamage);
     }
   }
-  if(mission.complete) return;
+  if(mission.complete || mission.recoveryTime>0) return;
   for(const target of mission.targets) {
     if(!target.health || target.kind==='ground') continue;
     const skill=target.kind==='drone'?config.skill:0;
@@ -776,12 +904,8 @@ function updateMission(dt) {
   if(mission.threat>0) {
     mission.threat=Math.max(0,mission.threat-dt);
     if(mission.threat===0) {
-      mission.shield=Math.max(0,mission.shield-(14+config.skill*9));
+      damageAircraft(16+config.skill*13,'来袭命中');
       mission.warningTime=3.5-config.skill*.65;
-      if(mission.shield===0) {
-        mission.shield=100;
-        notifyMission('护盾已自动复位');
-      } else notifyMission('护盾受损');
     }
   } else if(patrol && config.skill>0 && (mission.warningTime-=dt)<=0) {
     mission.threat=2.8-config.skill*.42;
@@ -819,9 +943,7 @@ function simulate(dt) {
     (stick[1]*1.62-bank*.69*(1-Math.abs(stick[1])))*authority,
     (stick[2]*.66+turn)*authority
   ].map((v,i)=>approach(s.rates[i],v,7,dt));
-  const rotation=quatMultiply(axisAngle([0,1,0],rates[2]*dt),
-    quatMultiply(s.attitude,quatMultiply(axisAngle([-1,0,0],rates[0]*dt),axisAngle([0,0,-1],rates[1]*dt))));
-  const attitude=unit(rotation);
+  const attitude=integrateAttitude(s.attitude,[-rates[0],rates[2],-rates[1]],dt);
   const [right,up,forward]=basisOf(attitude);
   const flow=unit(s.velocity);
   const liftDirection=unit(sub(up,mul(flow,dot(up,flow))));
@@ -844,6 +966,7 @@ function simulate(dt) {
       impact=1;
       remember('boundary');
       spray([position[0],surface+.5,position[2]],velocity,ground<0);
+      damageAircraft(ground<0?6:12,ground<0?'触水刮伤':'地形擦碰');
       velocity=mul(velocity,.75);
     }
     velocity[1]=Math.max(7,Math.abs(velocity[1])*.18+5);
@@ -864,6 +987,7 @@ function simulate(dt) {
     for(let axis=0;axis<3;axis++) p.position[axis]+=p.velocity[axis]*dt;
   }
   updateTutorial(dt);
+  updateAircraftDamage(dt);
   updateMission(dt);
 }
 
@@ -878,24 +1002,22 @@ function spring(value,velocity,target,frequency,dt) {
   const decay=Math.exp(-frequency*dt);
   return [add(target,mul(add(offset,mul(slope,dt)),decay)),mul(sub(velocity,mul(slope,frequency*dt)),decay)];
 }
-function makeCamera(eye,direction,bank,lens) {
+function makeCamera(eye,direction,referenceUp,lens) {
   const forward=unit(direction);
-  const horizontal=unit(cross([0,1,0],forward));
-  const vertical=cross(forward,horizontal);
-  const right=add(mul(horizontal,Math.cos(bank)),mul(vertical,-Math.sin(bank)));
+  const right=unit(cross(referenceUp,forward));
   return {eye,forward,right,up:cross(forward,right),lens};
 }
 function flightCamera(s,dt) {
   viewElapsed=Math.min(.35,viewElapsed+dt);
   viewBlend=mix(viewFrom,Number(chase),smooth(viewElapsed/.35));
-  const [right,up,nose]=basisOf(s.attitude);
+  const [,up,nose]=basisOf(s.attitude);
   const speedFactor=clamp((s.speed-38)/65,0,1);
   const flightDirection=unit(s.velocity);
   const target=unit(blend(nose,flightDirection,mix(.025,.28,viewBlend)));
-  const chaseDistance=mix(17,29,speedFactor)-Math.max(0,s.g-1.65)*1.2;
+  const chaseDistance=mix(15,25,speedFactor)-Math.max(0,s.g-1.65)*1.2;
   const eyeOffset=add(mul(up,mix(.94,mix(6.5,9.2,speedFactor),viewBlend)),mul(nose,mix(.54,-chaseDistance,viewBlend)));
   const anchor=s.position;
-  if(!camera) camera={anchor,velocity:[0,0,0],direction:target,tilt:0};
+  if(!camera) camera={anchor,velocity:[0,0,0],attitude:s.attitude,tilt:0};
   [camera.anchor,camera.velocity]=spring(camera.anchor,camera.velocity,anchor,mix(25,10,viewBlend),dt);
   // Limit spring lag relative to the seat, so the fast jet cannot outrun its eye point.
   const lag=sub(camera.anchor,anchor);
@@ -907,16 +1029,20 @@ function flightCamera(s,dt) {
   const push=clamp((pad+3-clearance)/3,0,1);
   eye[1]=Math.max(ground+pad,eye[1]+push*1.1*viewBlend);
   camera.tilt=approach(camera.tilt,push,6,dt);
-  camera.direction=unit(blend(camera.direction,target,1-Math.exp(-mix(21,10,viewBlend)*dt)));
-  const aim=add(camera.direction,mul(up,-viewBlend*(.178+camera.tilt*.14)));
-  const bump=(impact*.029+Math.max(0,s.g-2.5)*.0025)*Math.sin(simulationTime*71);
-  return makeCamera(eye,add(aim,mul(right,bump)),s.bank*mix(.76,.44,viewBlend)+camera.tilt*.055,
+  camera.attitude=blendAttitude(camera.attitude,s.attitude,1-Math.exp(-mix(34,22,viewBlend)*dt));
+  const [cameraRight,cameraUp,cameraNose]=basisOf(camera.attitude);
+  const aimPoint=unit(blend(cameraNose,target,viewBlend*.68));
+  const aim=add(aimPoint,mul(cameraUp,-viewBlend*.212));
+  // Clearance can move the eye upward. The orientation still inherits the full local roll.
+  const correctedAim=add(aim,[0,-viewBlend*camera.tilt*.14,0]);
+  const bump=(impact*.029+(mission?.damageFlash||0)*.012+Math.max(0,s.g-2.5)*.0025)*Math.sin(simulationTime*71);
+  return makeCamera(eye,add(correctedAim,mul(cameraRight,bump)),cameraUp,
     mix(.588,.686,speedFactor)*mix(1,1.08,viewBlend)-Math.max(0,s.g-2)*.012);
 }
 function titleCamera(time) {
   const turn=Math.sin(time*.23)*.036;
   return makeCamera([2275+Math.sin(time*.17)*23,48+Math.sin(time*.24)*5,410+Math.sin(time*.16)*32],
-    [-.13+turn,.065,.994],0,.56);
+    [-.13+turn,.065,.994],[0,1,0],.56);
 }
 function project(point,camera) {
   const offset=sub(point,camera.eye), z=dot(offset,camera.forward);
@@ -925,33 +1051,39 @@ function project(point,camera) {
   return [width/2+dot(offset,camera.right)*scale,height/2-dot(offset,camera.up)*scale];
 }
 
-// Canvas drawing primitives. Bitmap text is reduced to a binary mask at native resolution.
+// The HUD uses its own backing grid. Text retains hard edges at twice the layout resolution.
 let width=0,height=0,quality=0,hitBoxes={};
+const hudScale=2;
 const pixelFont='"Press Start 2P","Noto Sans SC",sans-serif';
 const monoFont='"Space Mono","Noto Sans SC",monospace';
+const chineseFont='"Noto Sans SC","Microsoft YaHei UI","PingFang SC",sans-serif';
 const glyphs=new Map();
 const glyphCanvas=document.createElement('canvas');
 const glyphContext=glyphCanvas.getContext('2d',{willReadFrequently:true});
 function type(text,x,y,size=9,color=colors.cream,mode='mono',align='left') {
-  const font=(mode==='display'?'800 ':'500 ')+size+'px '+(mode==='display'?pixelFont:monoFont);
+  const chinese=/[\u3000-\u9fff]/.test(text);
+  const font=(mode==='display'&&!chinese?'800 ':'500 ')+(size*hudScale)+'px '+
+    (chinese?chineseFont:mode==='display'?pixelFont:monoFont);
   const key=[font,color,text].join('|');
   let bitmap=glyphs.get(key);
   if(!bitmap) {
     glyphContext.font=font;
-    const pixels=Math.ceil(glyphContext.measureText(text).width)+3;
-    glyphCanvas.width=pixels; glyphCanvas.height=Math.ceil(size*1.65)+3;
+    const pixels=Math.ceil(glyphContext.measureText(text).width)+3*hudScale;
+    glyphCanvas.width=pixels; glyphCanvas.height=(Math.ceil(size*1.65)+3)*hudScale;
     glyphContext.font=font; glyphContext.textBaseline='alphabetic'; glyphContext.fillStyle=color;
-    glyphContext.fillText(text,1,Math.ceil(size*1.18));
+    glyphContext.fillText(text,hudScale,Math.ceil(size*1.18)*hudScale);
     const mask=glyphContext.getImageData(0,0,pixels,glyphCanvas.height);
-    for(let i=3;i<mask.data.length;i+=4) mask.data[i]=mask.data[i]>=111?255:0;
+    for(let i=3;i<mask.data.length;i+=4) mask.data[i]=mask.data[i]>=132?255:0;
     bitmap=document.createElement('canvas');
     bitmap.width=pixels; bitmap.height=glyphCanvas.height;
     bitmap.getContext('2d').putImageData(mask,0,0);
     if(glyphs.size>=440) glyphs.delete(glyphs.keys().next().value);
     glyphs.set(key,bitmap);
   }
-  const offset=align==='center'?bitmap.width/2:align==='right'?bitmap.width-2:1;
-  ctx.drawImage(bitmap,Math.round(x-offset),Math.round(y-Math.ceil(size*1.18)));
+  const drawWidth=bitmap.width/hudScale;
+  const offset=align==='center'?drawWidth/2:align==='right'?drawWidth-2:1;
+  const drawX=Math.round((x-offset)*hudScale)/hudScale;
+  ctx.drawImage(bitmap,drawX,Math.round(y-Math.ceil(size*1.18)),drawWidth,bitmap.height/hudScale);
 }
 const rect=(x,y,w,h,color)=>{ctx.fillStyle=color;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));};
 function line(x,y,endX,endY,color) {
@@ -1052,6 +1184,12 @@ function drawMissionSelector(center,y) {
   drawChoiceRow(center,y,'previousMission','nextMission');
   type(missionInfo().name,center,y+14,11,colors.cream,'mono','center');
 }
+function canvasButton(key,label,x,y,w,h,primary=false,size=10) {
+  hitBoxes[key]=[x,y,w,h];
+  rect(x,y,w,h,primary?colors.gold:colors.black);
+  border(x,y,w,h,primary?colors.cream:colors.haze);
+  type(label,x+w/2,y+h/2+size*.34,size,primary?colors.ink:hud,'mono','center');
+}
 
 // Title screen. Even the scrim, lettering and hit target live in the pixel canvas.
 function titleScreen(time) {
@@ -1060,8 +1198,9 @@ function titleScreen(time) {
   const center=width/2, middle=Math.round(height/2);
   const scale=width<190?3:width<325?4:height<290?5:height>=400?7:6;
   const emblemY=middle-110;
-  polygon([[center,emblemY-8],[center+11,emblemY+6],[center+3,emblemY+4],[center,emblemY+9],
-    [center-3,emblemY+4],[center-11,emblemY+6]],colors.gold);
+  for(const {vertices,color} of airplanePreviews[selectedAircraft]) {
+    polygon(vertices.map(([x,,z])=>[center+x*3.5,emblemY-z*3.2]),colors[color]);
+  }
   line(center-38,emblemY+2,center-19,emblemY+2,colors.haze);
   line(center+19,emblemY+2,center+38,emblemY+2,colors.haze);
   wordmark(center,middle-88,scale);
@@ -1078,15 +1217,21 @@ function titleScreen(time) {
     for(let i=0;i<Math.floor(progress*segments);i++) rect(left+4+i*segment,buttonY+6,segment-2,5,colors.gold);
     type(loading,center,buttonY+31,9,colors.cream,'mono','center');
   } else {
-    const x=Math.round(center-62), y=buttonY-1, w=124, h=30;
-    hitBoxes.launch=[x,y,w,h];
-    rect(x+3,y+4,w,h,colors.ink);
-    rect(x,y,w,h,colors.black);
-    rect(x+3,y+3,w-6,h-6,Math.floor(time*4)%2?colors.gold:colors.ochre);
-    border(x,y,w,h,colors.gold);
-    type('出 击',center,y+21,14,colors.ink,'display','center');
-    line(x+11,y+14,x+20,y+14,colors.copper);
-    line(x+w-21,y+14,x+w-12,y+14,colors.copper);
+    const y=buttonY-1;
+    if(checkpoint) {
+      const span=Math.min(width-18,192), half=Math.floor((span-6)/2), x=Math.round(center-span/2);
+      canvasButton('resumeCheckpoint','继续上次',x,y,half,30,true,12);
+      canvasButton('launch','重新出击',x+half+6,y,half,30,false,12);
+    } else {
+      const x=Math.round(center-62), w=124, h=30;
+      hitBoxes.launch=[x,y,w,h];
+      rect(x+3,y+4,w,h,colors.ink);
+      rect(x,y,w,h,colors.black);
+      rect(x+3,y+3,w-6,h-6,Math.floor(time*4)%2?colors.gold:colors.ochre);
+      border(x,y,w,h,colors.gold);
+      type('出 击',center,y+21,14,colors.ink,'display','center');
+    }
+    canvasButton('hangar','机库 · 选机',width-84,19,68,22,false,10);
   }
   const small=width<300?9:10;
   function hint(message,y,color,x=center,size=small) {
@@ -1097,7 +1242,7 @@ function titleScreen(time) {
   const shortStack=stacked&&height<345;
   let hintY=middle+57;
   if(ready) {
-    hint(tutorialSkipped?'教程已跳过':'按 Esc 跳过教程',middle+36,colors.gold);
+    hint(checkpointFallback?'存档仅保留在此页面':tutorialSkipped?'教程已跳过':'按 Esc 跳过教程',middle+36,colors.gold);
     const rowY=middle+43;
     const aircraftX=stacked?center:center-72, missionX=stacked?center:center+72;
     const missionY=stacked?rowY+(shortStack?25:45):rowY;
@@ -1105,7 +1250,7 @@ function titleScreen(time) {
     drawMissionSelector(missionX,missionY);
     if(!shortStack) {
       const kit=selectedLoadout(), config=missionInfo();
-      const kitText='机炮 '+kit.cannon+' · 追踪 '+kit.tracers+' · 热诱 '+kit.decoys;
+      const kitText='机炮 '+kit.cannon+' · 导弹 '+kit.tracers+' · 热诱 '+kit.decoys;
       rect(aircraftX-67,rowY+22,134,26,pattern(colors.ink,13));
       rect(missionX-67,missionY+22,134,26,pattern(colors.ink,13));
       hint(kit.era,rowY+32,colors.gold,aircraftX,9);
@@ -1122,8 +1267,8 @@ function titleScreen(time) {
     hint(touch?'左侧摇杆操纵 · 右侧滑条调油门':'W/S 俯仰 · A/D 横滚 · Q/E 偏航',hintY+hintSpacing,colors.cream);
   }
   if(hintY+hintSpacing*2<height-26) {
-    hint(ready&&selectedMission?'J 机炮 · K 追踪弹 · L 热诱弹 · T 切锁':'鼠标拖拽也可操作',
-      hintY+hintSpacing*2,colors.cream,center,width<270?8:small);
+    hint(ready?(touch?'出击后可触控发射与切换目标':'J 机炮 · K 导弹 · L 热诱弹 · T 切锁'):'鼠标拖拽也可操作',
+      hintY+hintSpacing*2,colors.cream,center,width<270?9:small);
   }
   corners(11,11,width-23,height-23,12,colors.haze);
   const footer='全部地形、云层与声音由浏览器实时生成，不加载任何外部素材。';
@@ -1133,6 +1278,60 @@ function titleScreen(time) {
   } else type(footer,center,height-13,8,colors.haze,'mono','center');
 }
 
+let hangar=false, hangarYaw=.78, hangarPitch=.38, hangarDrag=null;
+function hangarScreen(time) {
+  gl.clearColor(.125,.094,.176,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  const narrow=width<390, distance=narrow?15.5:10.6;
+  const eye=[Math.sin(hangarYaw)*distance,Math.sin(hangarPitch)*distance,Math.cos(hangarYaw)*distance];
+  const modelCamera=makeCamera(eye,mul(eye,-1),[0,1,0],.61);
+  const model={position:[0,0,0],attitude:[0,0,0,1],stick:[0,0,0],thrust:0};
+  renderJet(modelCamera,model,time,1,narrow?[0,.32]:[0,.035]);
+  rect(0,0,width,49,colors.black);
+  line(0,48,width-1,48,colors.haze);
+  type('机库',19,29,20,colors.cream,'display');
+  type('选择你的飞机',narrow?74:91,28,11,colors.gold);
+  canvasButton('closeHangar','返回',width-69,15,52,21,false,11);
+  const listTop=narrow?Math.min(Math.round(height*.55),height-167):62;
+  const columns=narrow?2:1, rowCount=aircraftModels.length/columns;
+  const rowHeight=narrow?Math.min(19,Math.floor((height-listTop-92)/rowCount)):
+    Math.min(24,Math.floor((height-listTop-17)/rowCount));
+  const rowWidth=narrow?Math.floor((width-38)/2):Math.min(120,Math.floor(width*.26));
+  hitBoxes.aircraftChoices=[];
+  aircraftModels.forEach((airframe,index)=>{
+    const column=narrow?index%2:0, row=Math.floor(index/columns);
+    const x=15+column*(rowWidth+8), y=listTop+row*rowHeight;
+    const active=index===selectedAircraft;
+    const slot=[x,y,rowWidth,rowHeight-2];
+    hitBoxes.aircraftChoices.push(slot);
+    rect(...slot,active?colors.gold:colors.plum);
+    type(airframe.name,x+7,y+Math.round((rowHeight-2)/2+3),Math.min(11,rowHeight-3),active?colors.ink:colors.cream);
+  });
+  const w=narrow?width-30:Math.min(171,Math.floor(width*.29));
+  const x=narrow?15:width-w-15, y=narrow?height-89:71;
+  const kit=selectedLoadout(), projectile=selectedProjectile();
+  rect(x,y,w,narrow?74:172,colors.black);
+  corners(x,y,w-1,narrow?73:171,8,colors.haze);
+  type(selectedModel().name,x+8,y+18,15,colors.cream);
+  const info=narrow?[
+    kit.era+' · '+projectile.name,
+    '机炮 '+kit.cannon+' 点 · 导弹 '+kit.tracers+' 枚 · 热诱 '+kit.decoys,
+    '锁定 '+kit.lockTime.toFixed(2)+' 秒 · '+projectile.style
+  ]:[
+    kit.era,'导弹 · '+projectile.name+' × '+kit.tracers,projectile.style+' · '+kit.tracerDamage+' 点',
+    '锁定 '+kit.lockTime.toFixed(2)+' 秒','机炮 '+kit.cannon+' 点 / 发','间隔 '+kit.cannonInterval.toFixed(3)+' 秒',
+    '热诱弹 × '+kit.decoys
+  ];
+  info.forEach((entry,index)=>type(entry,x+8,y+31+index*(narrow?14:16),10,index===1?colors.gold:colors.cream));
+  const mockupX=narrow?x+w-47:x+12, mockupY=narrow?y+15:y+150;
+  const fin=projectile.arc===0?4:projectile.arc<10?6:8;
+  polygon([[mockupX,mockupY-2],[mockupX+5,mockupY-fin],[mockupX+9,mockupY-2],
+    [mockupX+25,mockupY-2],[mockupX+34,mockupY],[mockupX+25,mockupY+2],[mockupX+9,mockupY+2],
+    [mockupX+5,mockupY+fin],[mockupX,mockupY+2]],projectile.glow);
+  rect(mockupX+7,mockupY-1,2,3,colors.plum);
+  type(touch?'拖动机体旋转':'拖动旋转 · 左右切换机型',width/2,narrow?listTop-9:height-20,10,colors.gold,'mono','center');
+}
+
 // Cockpit and HUD. A three-threshold mask reveals the airframe when the canopy exits.
 const canopy=document.createElement('canvas');
 const canopyCtx=canopy.getContext('2d');
@@ -1140,7 +1339,6 @@ const hud=colors.cream, dim=colors.gold;
 let screenInsets=[0,0,0,0];
 function drawCanopy(visibility) {
   if(visibility<=0) return;
-  canopyCtx.clearRect(0,0,width,height);
   // Draw the solid geometry on the overlay, then transfer it through a binary wipe.
   ctx.save();
   const cx=width/2, bottom=height, dashRise=touch?39:0, noseBase=bottom-dashRise;
@@ -1190,10 +1388,11 @@ function drawCanopy(visibility) {
     rect(x,bottom-17,3,3,colors.black); rect(x,bottom-17,1,1,colors.peach);
   }
   if(visibility<16) {
+    canopyCtx.clearRect(0,0,canopy.width,canopy.height);
     canopyCtx.drawImage(glass,0,0);
     ctx.clearRect(0,0,width,height);
     ctx.globalCompositeOperation='source-over';
-    ctx.drawImage(canopy,0,0);
+    ctx.drawImage(canopy,0,0,width,height);
     ctx.globalCompositeOperation='destination-out';
     rect(0,0,width,height,pattern('#ffffff',16-visibility));
   }
@@ -1231,11 +1430,13 @@ function flightHud(s,cam,time) {
   const compact=width<350;
   const tapeMargin=compact?53:80;
   const leftX=Math.round(mix(compact?61:width*.25,tapeMargin+insetLeft,blendAmount));
-  const rightX=Math.round(mix(compact?width-61:width*.75,width-tapeMargin-insetRight,blendAmount));
-  const tapeY=Math.round(mix(height-(touch?96:34),centerY-4,blendAmount));
+  const rightX=Math.round(mix(compact?width-61:width*.75,width-(touch?tapeMargin:115)-insetRight,blendAmount));
+  const chaseTapeY=selectedMission&&!touch?Math.max(centerY+20,screenInsets[0]+210):centerY-4;
+  const tapeY=Math.round(mix(height-(touch?96:34),chaseTapeY,blendAmount));
   const span=Math.round(mix(13,32,blendAmount));
   tape(leftX,tapeY,-1,speed,span,10,'时速');
-  tape(rightX,tapeY,1,s.position[1],span,10,'高度');
+  const altitudeY=Math.min(tapeY,height-(touch?199:123)-insetBottom);
+  tape(rightX,altitudeY,1,s.position[1],span,10,'高度');
 
   const ribbonY=Math.round(mix(27,18,blendAmount))+insetTop;
   const ribbonWidth=Math.min(156,width-55);
@@ -1253,12 +1454,15 @@ function flightHud(s,cam,time) {
   }
   polygon([[mid-3,ribbonY-5],[mid+4,ribbonY-5],[mid,ribbonY]],hud);
   type(String(Math.round(heading)%360).padStart(3,'0'),mid,ribbonY+17,9,hud,'mono','center');
-  const horizonPitch=Math.asin(clamp(nose[1],-1,1))/rad;
-  const roll=s.bank;
-  const co=Math.cos(roll), si=Math.sin(roll);
+  // Project gravity onto the camera plane, so the ladder matches the rotated scene.
+  const projectedGravity=Math.hypot(cam.right[1],cam.up[1]);
+  const horizonPitch=Math.asin(clamp(cam.forward[1],-1,1));
+  const co=cam.up[1]/Math.max(projectedGravity,1e-5), si=cam.right[1]/Math.max(projectedGravity,1e-5);
   const transform=(x,y)=>[mid+co*x-si*y,centerY+si*x+co*y];
-  for(let level=-30;level<=30;level+=10) {
-    const offset=(horizonPitch-level)*2.25;
+  for(let level=-30;level<=30&&projectedGravity>.10;level+=10) {
+    const delta=horizonPitch-level*rad;
+    if(Math.abs(delta)>1.3) continue;
+    const offset=Math.tan(delta)*height/(2*cam.lens);
     if(Math.abs(offset)>48) continue;
     const reach=level===0?55:37;
     for(const side of [-1,1]) {
@@ -1284,8 +1488,8 @@ function flightHud(s,cam,time) {
   border(barX,barY,barW,6,dim);
   rect(barX+2,barY+2,Math.floor((barW-4)*s.thrust),2,s.thrust>.86?colors.red:hud);
   type('油门 '+Math.round(s.throttle*100)+'%',barX,barY-4,7,dim);
-  const gX=Math.round(mix(mid,width-17-insetRight,blendAmount));
-  type('载荷 '+s.g.toFixed(1)+' 倍',gX,barY+(touch&&blendAmount>.45?4:15),8,dim,'mono',blendAmount>.45?'right':'center');
+  const gX=Math.round(mix(mid,16+insetLeft,blendAmount));
+  type('载荷 '+s.g.toFixed(1)+' 倍',gX,barY+15,8,dim,'mono',blendAmount>.45?'left':'center');
   if(warning && Math.floor(time*8)%2===0) {
     rect(mid-30,centerY-57,60,19,pattern(colors.ink,13));
     corners(mid-30,centerY-57,59,18,4,colors.red);
@@ -1338,20 +1542,38 @@ function drawMissionWorld(cam) {
     if(target.kind==='lookout') rect(x-span*.36,y-scale*1.8,span*.72,1,colors.gold);
   }
   for(const effect of mission.effects) {
+    if(effect.kind==='pulse') {
+      const travel=1-effect.life/cannonTraceTime;
+      const tip=project(blend(effect.origin,effect.position,Math.min(1,travel+.28)),cam);
+      const end=project(blend(effect.origin,effect.position,Math.max(.045,travel-.28)),cam);
+      if(insideView(tip)) {
+        const [x,y]=tip;
+        const [sx,sy]=insideView(end)?end:[width*.59,height*.69];
+        line(sx-1,sy+1,x-1,y+1,colors.copper);
+        line(sx,sy,x,y,colors.gold);
+        line(sx+1,sy,x+1,y,colors.cream);
+        rect(x-1,y-1,3,3,colors.hot);
+      }
+      continue;
+    }
     const position=project(effect.position,cam);
     if(!insideView(position)) continue;
     const [x,y]=position;
-    if(effect.kind==='pulse') {
-      const start=project(blend(effect.origin,effect.position,.12),cam);
-      if(insideView(start)) {
-        const [sx,sy]=start;
-        line(sx-2,sy+6,x-1,y,colors.ochre);
-        line(sx+2,sy+6,x+1,y,colors.cream);
+    if(effect.kind==='tracer') {
+      const age=1-effect.life/effect.duration;
+      for(let point=6;point>=1;point--) {
+        const sample=project(projectilePoint(effect,age-point*.035),cam);
+        if(!insideView(sample)) continue;
+        const radius=point>3?1:2;
+        rect(sample[0]-radius,sample[1]-radius,radius*2+1,radius*2+1,point>3?colors.haze:selectedProjectile().glow);
       }
-    } else if(effect.kind==='tracer') {
-      const tail=project(blend(effect.origin,effect.target.position,smooth(Math.max(0,1-effect.life/.62-.14))),cam);
-      if(insideView(tail)) line(...tail,x,y,colors.gold);
-      rect(x-1,y-1,2,2,colors.cream);
+      const last=project(projectilePoint(effect,age-.05),cam);
+      const heading=last?Math.atan2(y-last[1],x-last[0]):-Math.PI/2;
+      const co=Math.cos(heading), si=Math.sin(heading);
+      const shape=(right,up)=>[x+co*right-si*up,y+si*right+co*up];
+      polygon([shape(5,0),shape(1,-2),shape(-4,-2),shape(-6,-4),
+        shape(-5,0),shape(-6,4),shape(-4,2),shape(1,2)],colors.hot);
+      line(...shape(-5,0),...shape(-8,0),selectedProjectile().glow);
     } else {
       const burst=7-effect.life*7, shade=effect.life>.26?colors.cream:colors.ochre;
       for(let i=0;i<8;i++) {
@@ -1362,6 +1584,51 @@ function drawMissionWorld(cam) {
       }
     }
   }
+}
+function drawAirframeSmoke(s,cam) {
+  if(!mission || mission.integrity>56 || viewBlend<.55) return;
+  for(let index=9;index>=0;index--) {
+    const age=(index+wrap(simulationTime*12,1))/10;
+    const engine=rotate(s.attitude,[-.76,-.11,-2.1-age*15]);
+    const position=project(add(add(s.position,engine),[Math.sin(index+simulationTime*4)*.3,age*1.6,0]),cam);
+    if(!insideView(position)) continue;
+    const size=3+Math.floor(age*7);
+    rect(position[0]-size/2,position[1]-size/2,size,size,pattern(index>5?colors.mauve:colors.ink,13-index));
+  }
+}
+function drawWeaponFeedback(s,cam) {
+  if(!mission || (!mission.muzzleTime&&!mission.launchTime)) return;
+  const cannon=mission.muzzleTime>0;
+  const shift=cannon?.9:(mission.tracers%2?1.5:-1.5);
+  const muzzle=project(add(s.position,rotate(s.attitude,[shift,-.29,1.3])),cam);
+  const fallback=[width*(shift>0?.595:.405),height*.642];
+  const [x,y]=insideView(muzzle,12)?muzzle:fallback;
+  const time=cannon?mission.muzzleTime:mission.launchTime;
+  if((cannon&&time>.31)||(!cannon&&time>.32)) {
+    const r=cannon?7:9;
+    polygon([[x-r,y],[x-2,y-2],[x,y-r],[x+3,y-2],[x+r,y],[x+2,y+2],
+      [x,y+r],[x-2,y+2]],colors.ochre);
+    rect(x-2,y-2,5,5,colors.hot);
+  }
+  const label=cannon?'机炮开火':'导弹发射';
+  const cy=height/2+31, cx=width/2;
+  rect(cx-34,cy-9,68,14,colors.ink);
+  type(label,cx,cy+1,10,hud,'mono','center');
+}
+function drawDamageCue() {
+  if(!mission) return;
+  const critical=mission.integrity<=32;
+  if(mission.damageFlash>0 && Math.floor(simulationTime*15)%2===0) {
+    corners(5,5,width-11,height-11,17,colors.red);
+    rect(0,0,width,4,pattern(colors.red,5));
+    rect(0,height-4,width,4,pattern(colors.red,5));
+  }
+  if(!mission.damageFlash && !critical) return;
+  const center=width/2, y=height/2+52;
+  const message=mission.recoveryTime>0?'机体失效 · 正在复位':mission.damageFlash>0?
+    '机体受损 · '+mission.damageReason:'机体严重受损';
+  rect(center-71,y-11,142,16,colors.ink);
+  type(message,center,y+1,10,colors.red,'mono','center');
 }
 function compassRadar(s) {
   const compact=width<330;
@@ -1391,22 +1658,59 @@ function compassRadar(s) {
     if(target===mission.locked) border(px-2,py-2,5,5,hud);
     rect(px,py,target.kind==='drone'?1:2,target.kind==='ground'?1:2,contactColors[target.kind]);
   }
-  type(supportActive('jammer')?'雷达 · 受干扰':'雷达',left+size/2,top-4,8,dim,'mono','center');
+  rect(left,top-15,size,14,colors.ink);
+  type(supportActive('jammer')?'雷达受干扰':'雷达',left+size/2,top-5,9,hud,'mono','center');
+  rect(left,top+size+2,size,14,colors.ink);
+  type(range+' 米',left+size/2,top+size+12,9,dim,'mono','center');
+}
+function aircraftStatusHud() {
+  if(!mission) return;
+  const compact=width<330, w=compact?119:145, h=touch?64:73;
+  const right=width-screenInsets[1]-12, bottom=height-screenInsets[2]-(touch?91:12);
+  const x=right-w, y=bottom-h;
+  const health=mission.integrity;
+  const healthColor=health<=32?colors.red:health<100?colors.gold:hud;
+  rect(x,y,w,h,colors.ink);
+  corners(x,y,w-1,h-1,7,healthColor);
+  type(selectedModel().name,x+7,y+13,10,hud);
+  const originX=x+(compact?23:30), originY=y+(touch?34:39), scale=compact?4.7:5.6;
+  for(const {vertices,color} of airplanePreviews[selectedAircraft]) {
+    const horizontal=vertices.reduce((total,vertex)=>total+vertex[0],0)/3;
+    const longitudinal=vertices.reduce((total,vertex)=>total+vertex[2],0)/3;
+    const zone=longitudinal<-1.68?'tail':horizontal<-.82?'left':horizontal>.82?'right':'body';
+    const condition=mission.zones[zone];
+    polygon(vertices.map(([px,,pz])=>[originX+px*scale,originY-pz*scale]),
+      condition<45?colors.red:condition<91?colors.ochre:colors[color]);
+  }
+  const column=x+(compact?47:58), valueX=right-7, kit=selectedLoadout();
+  const rows=selectedMission?[
+    ['导弹',mission.tracers+' / '+kit.tracers,mission.launchTime>0?colors.hot:dim],
+    ['热诱弹',mission.decoys+' / '+kit.decoys,mission.threat>0?colors.red:dim],
+    ['护盾',mission.shield+'%',hud]
+  ]:[['机体',health<100?'受损':'完好',healthColor]];
+  rows.forEach(([label,value,color],index)=>{
+    const lineY=y+(touch?19:23)+index*(touch?11:13);
+    type(label,column,lineY,9,hud);
+    type(value,valueX,lineY,10,color,'mono','right');
+  });
+  type('血量',column,bottom-10,9,healthColor);
+  type(health+'/100',valueX,bottom-10,10,healthColor,'mono','right');
+  rect(x+7,bottom-5,w-14,2,colors.slate);
+  rect(x+7,bottom-5,(w-14)*health/100,2,healthColor);
 }
 function missionHud(s,cam) {
-  if(!selectedMission || !mission) return;
+  if(!mission || !selectedMission) return;
   const compact=width<330, left=13+screenInsets[3], top=screenInsets[0]+(compact?62:57);
   const active=mission.targets.filter(target=>target.health>0).length;
   const blockWidth=compact?91:121;
-  rect(left,top,blockWidth,53,pattern(colors.ink,13));
-  corners(left,top,blockWidth-1,52,6,dim);
+  rect(left,top,blockWidth,43,colors.ink);
+  corners(left,top,blockWidth-1,42,6,dim);
   type(mission.config.name,left+6,top+14,11,hud,'display');
   type((mission.targets.length-active)+' / '+mission.targets.length+'　'+mission.points+' 分',
-    left+6,top+24,8,dim);
+    left+6,top+25,10,dim);
   const support=[supportActive('lookout')?'预警':'',supportActive('jammer')?'干扰':''].filter(Boolean).join(' · ');
-  type(mission.complete?'任务完成':support||'空域巡航',left+6,top+36,9,dim);
-  border(left+6,top+41,blockWidth-12,6,colors.haze);
-  rect(left+8,top+43,(blockWidth-16)*mission.shield/100,2,mission.shield<50?colors.red:colors.gold);
+  const status=mission.complete?'任务完成':support||'空域巡航';
+  type(status,left+6,top+38,9,hud);
   compassRadar(s);
 
   const target=mission.locked;
@@ -1417,9 +1721,11 @@ function missionHud(s,cam) {
     if(insideView(point,14)&&point[1]>53&&point[1]<bottom&&clearSight(cam.eye,target.position)) {
       const [x,y]=point, radius=locked?11:8;
       corners(x-radius,y-radius,radius*2,radius*2,5,color);
-      const text=targetNames[target.kind]+' '+Math.round(targetRange(target))+' 米';
-      type(text,x+1,y+radius+12,8,colors.ink,'mono','center');
-      type(text,x,y+radius+11,8,color,'mono','center');
+      const labelX=clamp(x,62,width-62), labelY=y+radius+4;
+      rect(labelX-60,labelY,120,25,colors.ink);
+      type(targetNames[target.kind]+'　'+Math.round(targetRange(target))+' 米',labelX,labelY+10,9,hud,'mono','center');
+      type('耐久 '+target.health+'/'+target.maxHealth+'　'+(locked?'已锁定':Math.floor(mission.charge*100)+'%'),
+        labelX,labelY+21,9,color,'mono','center');
       rect(x-9,y-radius-4,18,2,colors.ink);
       if(mission.charge>0) rect(x-9,y-radius-4,Math.ceil(18*mission.charge),1,color);
     } else {
@@ -1445,18 +1751,14 @@ function missionHud(s,cam) {
     }
   }
   if(mission.threat>0 || mission.noticeTime>0) {
-    const notice=mission.threat>0?'追踪来袭 · 释放热诱弹':mission.notice;
+    const notice=mission.threat>0?'导弹来袭':mission.notice;
     const color=mission.threat>0?colors.red:colors.cream;
     const cx=width/2, y=compact?top+92:height/2-79, w=Math.min(width-12,170);
     if(mission.threat===0 || Math.floor(simulationTime*8)%2===0) {
-      rect(cx-w/2,y-10,w,15,pattern(colors.ink,14));
-      type(notice,cx,y+1,width<235?9:10,color,'display','center');
+      rect(cx-w/2,y-12,w,17,colors.ink);
+      type(notice,cx,y+1,width<235?10:11,color,'display','center');
     }
   }
-  const status='机炮 '+mission.cannon+' · 追踪 '+mission.tracers+' · 热诱 '+mission.decoys;
-  const weaponsY=top+72;
-  rect(left,weaponsY-8,compact?117:136,12,pattern(colors.ink,12));
-  type(status,left+3,weaponsY+1,9,dim);
 }
 
 // Tutorial milestones are collected from launch, even when their prompt is still queued.
@@ -1489,7 +1791,7 @@ function updateTutorial(dt) {
 }
 function tutorialHud(s) {
   const x=screenInsets[3]+12;
-  const y=height-screenInsets[2]-(touch?Math.round(mix(151,120,viewBlend))+(selectedMission?12:0):112);
+  const y=height-screenInsets[2]-(touch?191:112);
   const active=!tutorialSkipped&&lesson<lessons.length;
   if(active) {
     const [,title,keysHint,touchHint]=lessons[lesson];
@@ -1513,7 +1815,7 @@ function tutorialHud(s) {
       type(title,x+14,y-extra+14,11,hud,'display');
       rows.forEach((row,index)=>type(row,x+8,y-extra+27+index*11,textSize,dim));
     }
-  } else {
+  } else if(!touch || width>270) {
     const sign=v=>v>=0?'＋':'−';
     const bank=s.bank/rad, climb=s.velocity[1];
     type('坡度 '+sign(bank)+Math.abs(bank).toFixed(0)+'°',x,y+12,8,dim);
@@ -1540,13 +1842,8 @@ function touchHud(s) {
   hitBoxes.view=[viewX-4,viewY-4,42,30];
   rect(viewX,viewY,34,22,pattern(colors.ink,13));border(viewX,viewY,34,22,dim);
   type(chase?'座舱':'追尾',viewX+17,viewY+15,9,hud,'display','center');
-  const pauseX=width-screenInsets[1]-39, pauseY=screenInsets[0]+7;
-  hitBoxes.pause=[pauseX,pauseY,30,17];
-  rect(pauseX,pauseY,30,17,pattern(colors.ink,14));
-  border(pauseX,pauseY,30,17,dim);
-  type(paused?'继续':'暂停',pauseX+15,pauseY+12,10,hud,'display','center');
   if(!selectedMission || paused) return;
-  const buttonLabels=[['pulse','机炮'],['tracer','追踪'],['decoy','热诱'],['cycleTarget','切锁']];
+  const buttonLabels=[['pulse','机炮'],['tracer','导弹'],['decoy','热诱'],['cycleTarget','切锁']];
   const buttonWidth=Math.min(37,Math.floor((width-screenInsets[3]-screenInsets[1]-43)/4));
   const buttonY=height-screenInsets[2]-87;
   for(let index=0;index<buttonLabels.length;index++) {
@@ -1636,6 +1933,63 @@ function sound(s) {
   set(servo.frequency,345+Math.abs(s.stick[1])*190);
 }
 
+// Campaign checkpoints. Persist a compact snapshot and resolve target references by index.
+const checkpointKey='patrol.checkpoint.v1';
+let checkpoint=readCheckpoint(), checkpointFallback=false;
+function readCheckpoint() {
+  try {
+    const data=JSON.parse(localStorage.getItem(checkpointKey)||'null');
+    const vector=(values,size)=>Array.isArray(values)&&values.length===size&&values.every(Number.isFinite);
+    if(data?.version===1 && aircraftModels[data.model] && missions[data.level] &&
+      vector(data.flight?.position,3) && vector(data.flight?.velocity,3) &&
+      vector(data.flight?.attitude,4) && vector(data.flight?.stick,3) && vector(data.flight?.rates,3) &&
+      Array.isArray(data.targets) && data.targets.every(target=>targetNames[target.kind]&&vector(target.position,3)) &&
+      Number.isFinite(data.time)&&data.status?.zones&&data.effects?.every(effect=>Number.isInteger(effect.targetIndex))&&
+      Array.isArray(data.tutorial?.milestones)) return data;
+  } catch {}
+  return null;
+}
+function saveCheckpoint() {
+  if(!flying || !mission) return;
+  const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,threat,recoveryTime}=mission;
+  const snapshot={
+    version:1, model:selectedAircraft, level:selectedMission, time:simulationTime, chase,
+    flight:aircraft, targets:mission.targets, lock:mission.targets.indexOf(mission.locked), charge:mission.charge,
+    effects:mission.effects.filter(effect=>effect.kind==='tracer').map(({target,...effect})=>
+      ({...effect,targetIndex:mission.targets.indexOf(target)})),
+    status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,threat,recoveryTime},
+    tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]}
+  };
+  const encoded=JSON.stringify(snapshot);
+  checkpoint=JSON.parse(encoded);
+  try {
+    localStorage.setItem(checkpointKey,encoded);
+    checkpointFallback=false;
+  } catch {checkpointFallback=true;}
+}
+function resumeCheckpoint() {
+  if(!ready || flying || !checkpoint) return;
+  const snapshot=JSON.parse(JSON.stringify(checkpoint));
+  selectedAircraft=snapshot.model;selectedMission=snapshot.level;
+  flying=true;paused=false;simulationTime=snapshot.time;
+  resetFlight();resetMission();
+  aircraft=snapshot.flight;previous=aircraft;
+  chase=Boolean(snapshot.chase);viewBlend=viewFrom=Number(chase);viewElapsed=.35;
+  Object.assign(mission,snapshot.status);
+  mission.targets=snapshot.targets;
+  mission.locked=mission.targets[snapshot.lock]||null;
+  mission.charge=snapshot.charge;
+  mission.effects=snapshot.effects.map(effect=>({...effect,target:mission.targets[effect.targetIndex]}))
+    .filter(effect=>effect.target);
+  if(!tutorialSkipped) {
+    tutorialSkipped=snapshot.tutorial.skipped;
+    lesson=snapshot.tutorial.lesson;freeTime=snapshot.tutorial.freeTime;
+    milestones.clear();snapshot.tutorial.milestones.forEach(item=>milestones.add(item));
+  }
+  startAudio();
+}
+addEventListener('pagehide',saveCheckpoint);
+
 // Input. All coordinates and hit areas are measured on the pixel canvas.
 function launch() {
   if(!ready||flying) return;
@@ -1643,33 +1997,54 @@ function launch() {
   chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
   resetFlight();startAudio();
   resetMission();
+  saveCheckpoint();
 }
 function changeAircraft(direction) {
   if(ready&&!flying) selectedAircraft=wrap(selectedAircraft+direction,aircraftModels.length);
 }
 function returnToTitle() {
   if(!paused || !flying) return;
+  saveCheckpoint();
   sound(aircraft);
   flying=false;drag=null;throttlePointer=null;keys.clear();combatPointers.clear();
+}
+function togglePause() {
+  if(!flying) return;
+  paused=!paused;
+  if(paused) saveCheckpoint();
+  sound(aircraft);
+}
+function toggleHangar() {
+  if(ready&&!flying) {hangar=!hangar;hangarDrag=null;}
 }
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
 const actionKeys=new Set(['Enter','Escape','KeyC','KeyR','KeyP','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Backspace',
-  'KeyJ','KeyK','KeyL','KeyT']);
+  'KeyJ','KeyK','KeyL','KeyT','KeyH']);
 addEventListener('keydown',event=>{
   if(event.metaKey || !flightKeys.has(event.code)&&!actionKeys.has(event.code)) return;
   if(event.ctrlKey&&!flying&&!event.code.startsWith('Control')) return;
   event.preventDefault();
   keys.add(event.code);
   if(event.repeat) return;
-  if(event.code==='Enter') launch();
+  if(event.code==='Enter') {
+    if(hangar) toggleHangar();
+    else if(paused&&flying) togglePause();
+    else if(!flying&&checkpoint) resumeCheckpoint();
+    else launch();
+  }
   if(event.code==='ArrowLeft' || event.code==='ArrowRight') changeAircraft(event.code==='ArrowLeft'?-1:1);
   if(event.code==='ArrowUp' || event.code==='ArrowDown') changeMission(event.code==='ArrowUp'?-1:1);
   if(event.code==='Backspace') returnToTitle();
-  if(event.code==='Escape') skipTutorial();
+  if(event.code==='Escape') {
+    if(hangar) toggleHangar();
+    else if(flying) togglePause();
+    else skipTutorial();
+  }
+  if(event.code==='KeyH') toggleHangar();
   if(event.code==='KeyC') toggleView();
-  if(event.code==='KeyR'&&flying) {resetFlight();resetMission();}
-  if(event.code==='KeyP'&&flying) {paused=!paused;sound(aircraft);}
+  if(event.code==='KeyR'&&flying) {resetFlight();resetMission();saveCheckpoint();}
+  if(event.code==='KeyP'&&flying) togglePause();
   if(flying&&!paused && event.code==='KeyT') cycleTarget();
   if(flying&&!paused && event.code==='KeyL') dropDecoy();
   if(flying&&!paused && event.code==='KeyJ') firePulse();
@@ -1677,7 +2052,7 @@ addEventListener('keydown',event=>{
 });
 addEventListener('keyup',event=>keys.delete(event.code));
 addEventListener('blur',()=>{
-  keys.clear();combatPointers.clear();drag=null;throttlePointer=null;touchThrottle=null;
+  keys.clear();combatPointers.clear();drag=null;hangarDrag=null;throttlePointer=null;touchThrottle=null;
 });
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden) {keys.clear();combatPointers.clear();}
@@ -1696,8 +2071,22 @@ function throttleAt(y) {
 glass.addEventListener('pointerdown',event=>{
   if(event.button!==0) return;
   const p=pointer(event);
+  if(hangar) {
+    if(inside(p,hitBoxes.closeHangar)) toggleHangar();
+    else {
+      const choice=hitBoxes.aircraftChoices?.findIndex(box=>inside(p,box))??-1;
+      if(choice>=0) selectedAircraft=choice;
+      else {
+        hangarDrag={id:event.pointerId,point:p};
+        glass.setPointerCapture(event.pointerId);
+      }
+    }
+    return;
+  }
   if(!flying) {
     if(inside(p,hitBoxes.launch)) launch();
+    else if(inside(p,hitBoxes.resumeCheckpoint)) resumeCheckpoint();
+    else if(inside(p,hitBoxes.hangar)) toggleHangar();
     else if(inside(p,hitBoxes.previousAircraft)) changeAircraft(-1);
     else if(inside(p,hitBoxes.nextAircraft)) changeAircraft(1);
     else if(inside(p,hitBoxes.previousMission)) changeMission(-1);
@@ -1705,7 +2094,7 @@ glass.addEventListener('pointerdown',event=>{
     return;
   }
   if(inside(p,hitBoxes.returnToTitle)) {returnToTitle();return;}
-  if(inside(p,hitBoxes.pause)) {paused=!paused;sound(aircraft);return;}
+  if(inside(p,hitBoxes.pause) || inside(p,hitBoxes.continueFlight)) {togglePause();return;}
   if(paused) return;
   if(inside(p,hitBoxes.cycleTarget)) {cycleTarget();return;}
   if(inside(p,hitBoxes.decoy)) {dropDecoy();return;}
@@ -1729,9 +2118,15 @@ glass.addEventListener('pointerdown',event=>{
 });
 glass.addEventListener('pointermove',event=>{
   const p=pointer(event);
-  const overButton=['launch','previousAircraft','nextAircraft','previousMission','nextMission','pause','returnToTitle']
-    .some(name=>inside(p,hitBoxes[name]));
-  glass.style.cursor=overButton?'pointer':flying&&!touch&&!paused?'crosshair':'default';
+  if(hangarDrag?.id===event.pointerId) {
+    hangarYaw-= (p[0]-hangarDrag.point[0])*.015;
+    hangarPitch=clamp(hangarPitch+(p[1]-hangarDrag.point[1])*.009,-1.05,1.05);
+    hangarDrag.point=p;
+  }
+  const overButton=['launch','resumeCheckpoint','hangar','closeHangar','previousAircraft','nextAircraft',
+    'previousMission','nextMission','pause','continueFlight','returnToTitle']
+    .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(box=>inside(p,box));
+  glass.style.cursor=overButton?'pointer':hangar?(hangarDrag?'grabbing':'grab'):flying&&!touch&&!paused?'crosshair':'default';
   if(event.pointerId===throttlePointer) throttleAt(p[1]);
   if(drag?.id===event.pointerId) {
     const reach=touch?24:44;
@@ -1740,6 +2135,7 @@ glass.addEventListener('pointermove',event=>{
   }
 });
 for(const eventName of ['pointerup','pointercancel','lostpointercapture']) glass.addEventListener(eventName,event=>{
+  if(hangarDrag?.id===event.pointerId) hangarDrag=null;
   for(const [action,id] of combatPointers) if(id===event.pointerId) combatPointers.delete(action);
   if(drag?.id===event.pointerId) drag=null;
   if(throttlePointer===event.pointerId) {
@@ -1753,6 +2149,7 @@ const safeArea=document.createElement('div');
 safeArea.style.cssText='position:fixed;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
 document.body.append(safeArea);
 const resolutionLevels=[432,368,306,264];
+const worldResolutionLevels=[600,512,432,352];
 let resizePending=true;
 addEventListener('resize',()=>{resizePending=true;});
 function resize() {
@@ -1761,12 +2158,16 @@ function resize() {
   const aspect=innerWidth/innerHeight;
   if(aspect<.70) height=Math.max(height,Math.ceil([216,197,182,171][quality]/aspect));
   width=Math.round(height*aspect);
-  world.width=glass.width=canopy.width=width;
-  world.height=glass.height=canopy.height=height;
+  const worldHeight=Math.max(worldResolutionLevels[quality],height);
+  world.height=worldHeight;
+  world.width=Math.round(worldHeight*aspect);
+  glass.width=canopy.width=width*hudScale;
+  glass.height=canopy.height=height*hudScale;
+  ctx.setTransform(hudScale,0,0,hudScale,0,0);
   ctx.imageSmoothingEnabled=false;
   const style=getComputedStyle(safeArea);
   screenInsets=['paddingTop','paddingRight','paddingBottom','paddingLeft'].map(key=>Math.ceil(parseFloat(style[key])*height/innerHeight));
-  if(gl) gl.viewport(0,0,width,height);
+  if(gl) gl.viewport(0,0,world.width,world.height);
   resizePending=false;
 }
 let last=performance.now(), average=16.67, pressure=0, headroom=0, audioTime=0;
@@ -1790,6 +2191,7 @@ function draw(now) {
   hitBoxes={};
   if(!renderWorld) rect(0,0,width,height,colors.violet);
   if(!flying) {
+    if(hangar) {hangarScreen(realTime);return;}
     if(renderWorld) renderWorld(titleCamera(realTime),realTime,null);
     titleScreen(realTime);
     return;
@@ -1807,26 +2209,30 @@ function draw(now) {
   renderWorld(cam,simulationTime,s);
   const canopyCoverage=viewBlend<.24?16:viewBlend<.48?11:viewBlend<.76?5:0;
   renderJet(cam,s,simulationTime,viewBlend>.35?clamp((viewBlend-.35)*2.6,0,1):0);
+  drawAirframeSmoke(s,cam);
   drawSpray(cam);
   drawMissionWorld(cam);
   drawCanopy(canopyCoverage);
   if(canopyCoverage<16) edgeVignette();
   flightHud(s,cam,simulationTime);
   missionHud(s,cam);
+  aircraftStatusHud();
+  drawWeaponFeedback(s,cam);
+  drawDamageCue();
   tutorialHud(s);
   if(touch) touchHud(s);
+  const pauseWidth=touch?30:43;
+  canvasButton('pause',paused?'继续':'暂停',width-screenInsets[1]-pauseWidth-10,screenInsets[0]+8,pauseWidth,18,false,10);
   if(paused) {
-    const center=width/2, y=height/2-37;
-    rect(center-71,y,142,79,pattern(colors.ink,15));
-    corners(center-71,y,141,78,8,dim);
+    const center=width/2, y=height/2-54;
+    rect(center-78,y,156,108,colors.ink);
+    corners(center-78,y,155,107,8,dim);
     type('暂停',center,y+18,14,hud,'display','center');
     const kit=selectedLoadout();
     type(selectedModel().name+' · '+missionInfo().name,center,y+31,9,dim,'mono','center');
-    type('锁定 '+kit.lockTime.toFixed(2)+' 秒 · 追踪伤害 '+kit.tracerDamage,center,y+45,8,dim,'mono','center');
-    hitBoxes.returnToTitle=[center-57,y+52,114,19];
-    rect(center-57,y+52,114,19,colors.plum);
-    border(center-57,y+52,114,19,dim);
-    type(touch?'返回选机与选关':'退格键 · 返回选机与选关',center,y+65,8,hud,'mono','center');
+    type('机炮 '+kit.cannon+' 点 · 锁定 '+kit.lockTime.toFixed(2)+' 秒',center,y+44,9,dim,'mono','center');
+    canvasButton('continueFlight','继续飞行',center-60,y+53,120,20,true,11);
+    canvasButton('returnToTitle','保存并退出',center-60,y+78,120,20,false,11);
   }
   if(realTime-audioTime>.038) {sound(s);audioTime=realTime;}
 }
