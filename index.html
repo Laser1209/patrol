@@ -330,6 +330,7 @@ uniform mat3 attitude,view;
 uniform vec2 resolution,control;
 uniform vec2 screenOffset;
 uniform float lens,thrust;
+uniform float orthographic;
 uniform vec2 propPivots;
 uniform float propAngle;
 out vec3 worldNormal;
@@ -355,8 +356,9 @@ void main(){
   vec3 camera=transpose(view)*(jetPosition+attitude*p-eye);
   worldNormal=attitude*n;
   viewDepth=camera.z;
-  gl_Position=vec4(camera.x*resolution.y/resolution.x/lens+camera.z*screenOffset.x,
-    camera.y/lens+camera.z*screenOffset.y,camera.z-.10,camera.z);
+  vec2 projected=vec2(camera.x*resolution.y/resolution.x,camera.y);
+  gl_Position=orthographic>0.?vec4(projected*orthographic+screenOffset,0.,1.):
+    vec4(projected/lens+camera.z*screenOffset,camera.z-.10,camera.z);
 }`;
 const jetFragment=shaderCommon+`
 in vec3 worldNormal;
@@ -364,14 +366,31 @@ in float viewDepth;
 flat in float paint,part;
 uniform vec3 forward;
 uniform float thrust,flicker,visibility;
+uniform bool studio;
 out vec4 pixel;
+vec3 studioColor(vec3 n) {
+  float light=clamp(.33+dot(n,normalize(vec3(-.38,.78,.54)))*.68,0.,1.);
+  vec3 graphite=vec3(.16,.19,.24), shadow=vec3(.28,.33,.39), cool=vec3(.45,.51,.58);
+  vec3 pale=vec3(.63,.69,.74), lightGray=vec3(.80,.84,.86), whiteGray=vec3(.89,.91,.92);
+  if(paint==3.) return ramp(vec3(.11,.15,.20),graphite,shadow,cool,light);
+  if(paint==4.) return ramp(vec3(.09,.10,.12),graphite,shadow,cool,light*.68);
+  if(paint==14.) return ramp(graphite,shadow,cool,pale,light*.87);
+  if(paint==15.) return ramp(graphite,vec3(.29,.36,.31),vec3(.39,.47,.37),pale,light);
+  if(paint==12.) return vec3(.66,.25,.24);
+  if(paint==13.) return lightGray;
+  if(paint==9.||paint==10.) return ramp(graphite,shadow,cool,pale,light);
+  if(paint==8.) return ramp(shadow,vec3(.36,.44,.53),vec3(.51,.61,.70),lightGray,light);
+  if(paint==11.) return ramp(shadow,cool,pale,whiteGray,light);
+  return ramp(shadow,cool,pale,lightGray,light);
+}
 void main(){
   if(visibility<threshold()) discard;
   vec3 color;
   if(part==3.) {
     if(thrust<.34 || threshold()>(paint>6.? .77:.39)+flicker*.17) discard;
     color=paint>6.?(thrust>.86?cream:gold):(flicker>0.?peach:copper);
-  } else {
+  } else if(studio) color=studioColor(normalize(worldNormal));
+  else {
     vec3 n=normalize(worldNormal);
     float light=clamp(dot(n,sun)*.78+.5,0.,1.);
     if(paint==1.) color=ramp(plum,copper,ochre,gold,light);
@@ -401,21 +420,34 @@ const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b
 const length = a => Math.hypot(...a);
 const unit = a => mul(a,1/(length(a)||1));
 const blend = (a,b,t) => a.map((v,i)=>mix(v,b[i],t));
-// These are toy proportions. Each profile gives the hull, wing planform and visible trim.
+// Exterior proportions in game units. Wing edges are defined by inboard, knee and tip chords.
 const aircraftModels=[
-  {name:'苏-27', nose:4.1, hull:.78, wing:[1.28,-1.02,-1.62,-1.53,3.65], fins:[1.00,.19,1.48], engines:2, stabilizers:true, paint:2, trim:5},
-  {name:'苏-34', nose:4.0, hull:1.02, wing:[1.37,-1.04,-1.69,-1.55,3.78], fins:[1.12,.17,1.38], engines:2, stabilizers:true, canard:true, duckbill:true, paint:8, trim:2},
-  {name:'米格-21', nose:3.55, hull:.52, wing:[.75,-1.36,-1.61,-1.82,2.90], fins:[0,0,1.59], engines:1, intake:true, stabilizers:true, paint:0, trim:1},
-  {name:'F-15', nose:3.76, hull:.86, wing:[1.05,-.68,-1.36,-1.76,3.58], fins:[1.05,.03,1.56], engines:2, stabilizers:true, paint:2, trim:5},
-  {name:'F-16', nose:3.62, hull:.60, wing:[1.02,-.97,-1.48,-1.55,3.08], fins:[0,0,1.64], engines:1, chin:true, stabilizers:true, paint:0, trim:1},
-  {name:'F-18', nose:3.68, hull:.71, wing:[1.37,-.53,-1.39,-1.62,3.35], fins:[.76,.53,1.37], engines:2, strakes:true, stabilizers:true, paint:9, trim:5},
-  {name:'F-22', nose:3.89, hull:.98, wing:[1.03,-.73,-1.51,-1.83,3.70], fins:[.81,.58,1.31], engines:2, square:true, stabilizers:true, paint:2, trim:9},
-  {name:'歼-11', nose:4.15, hull:.77, wing:[1.14,-1.00,-1.56,-1.49,3.62], fins:[.95,.18,1.47], engines:2, stabilizers:true, paint:9, trim:1},
-  {name:'歼-16', nose:4.14, hull:.83, wing:[1.23,-1.06,-1.72,-1.52,3.76], fins:[1.02,.16,1.55], engines:2, tandem:true, stabilizers:true, paint:8, trim:5},
-  {name:'歼-20', nose:4.63, hull:.88, wing:[.68,-1.29,-1.71,-2.28,3.66], fins:[.88,.57,1.30], engines:2, canard:true, paint:9, trim:2},
-  {name:'B-52',role:'bomber',nose:6.3,hull:.98,wing:[1.48,-2.32,-2.88,-.65,6.7],fins:[0,0,2.23],engines:8,paint:9,trim:2,pods:'twin'},
-  {name:'图-95',role:'bomber',nose:6.2,hull:.93,wing:[1.33,-2.38,-2.88,-1.06,6.48],fins:[0,0,2.12],engines:4,paint:2,trim:9,pods:'prop'},
-  {name:'轰-6',role:'bomber',nose:5.85,hull:1.03,wing:[1.23,-2.04,-2.62,-.87,5.95],fins:[0,0,2.08],engines:2,paint:2,trim:8,pods:'root'}
+  {name:'苏-27', nose:4.90, hull:.77, wing:[1.64,-.45,-1.40,-1.73,2.65], knee:[.17,1.13,-1.64],
+    fins:[.76,.045,1.56], engines:2, flanker:true, stabilizers:true, paint:2, trim:9},
+  {name:'苏-34', nose:4.74, hull:1.05, wing:[1.65,-.49,-1.46,-1.78,2.57], knee:[.18,1.13,-1.68],
+    fins:[.84,.055,1.52], engines:2, flanker:true, stabilizers:true, canard:true, duckbill:true, paint:8, trim:2},
+  {name:'米格-21', nose:3.88, hull:.46, wing:[.90,-1.04,-1.42,-1.64,1.80], knee:[.21,.53,-1.61],
+    fins:[0,0,1.58], engines:1, intake:true, stabilizers:true, paint:0, trim:9},
+  {name:'F-15', nose:4.35, hull:.89, wing:[1.04,-.53,-1.33,-1.86,2.54], knee:[.18,.85,-1.74],
+    fins:[.91,.035,1.64], engines:2, stabilizers:true, paint:2, trim:9},
+  {name:'F-16', nose:3.87, hull:.58, wing:[1.13,-.81,-1.38,-1.61,2.35], knee:[.18,.83,-1.48],
+    fins:[0,0,1.64], engines:1, chin:true, stabilizers:true, paint:2, trim:9},
+  {name:'F-18', nose:4.04, hull:.74, wing:[.97,-.48,-1.35,-1.60,2.61], knee:[.17,.73,-1.49],
+    fins:[.62,.51,1.49], engines:2, strakes:true, stabilizers:true, paint:2, trim:9},
+  {name:'F-22', nose:4.25, hull:1.04, wing:[1.26,-.34,-.93,-2.03,2.68], knee:[.18,1.02,-1.85],
+    fins:[.72,.67,1.38], engines:2, square:true, stabilizers:true, paint:2, trim:9},
+  {name:'歼-11', nose:4.98, hull:.76, wing:[1.64,-.50,-1.43,-1.76,2.72], knee:[.17,1.13,-1.66],
+    fins:[.76,.02,1.58], engines:2, flanker:true, stabilizers:true, paint:2, trim:9},
+  {name:'歼-16', nose:4.95, hull:.81, wing:[1.68,-.48,-1.43,-1.77,2.70], knee:[.18,1.14,-1.67],
+    fins:[.79,.045,1.63], engines:2, flanker:true, tandem:true, stabilizers:true, paint:9, trim:2},
+  {name:'歼-20', nose:5.25, hull:.93, wing:[.65,-1.22,-1.67,-2.81,2.60], knee:[.22,.29,-2.65],
+    fins:[.68,.61,1.26], engines:2, chine:true, canard:true, paint:9, trim:2},
+  {name:'B-52',role:'bomber',nose:6.3,hull:.98,wing:[1.48,-2.32,-2.88,-.65,7.16],knee:[.31,.24,-1.56],
+    fins:[0,0,2.23],engines:8,paint:9,trim:2,pods:'twin'},
+  {name:'图-95',role:'bomber',nose:6.2,hull:.93,wing:[1.33,-2.38,-2.88,-1.06,6.48],knee:[.29,.12,-1.54],
+    fins:[0,0,2.12],engines:4,paint:2,trim:9,pods:'prop'},
+  {name:'轰-6',role:'bomber',nose:5.85,hull:1.03,wing:[1.23,-2.04,-2.62,-.87,5.68],knee:[.22,.60,-1.35],
+    fins:[0,0,2.02],engines:2,paint:2,trim:8,pods:'root'}
 ];
 let selectedAircraft=0;
 const selectedModel=()=>aircraftModels[selectedAircraft];
@@ -470,21 +502,35 @@ function jetGeometry(model,detailed) {
     return rings;
   }
   const bomber=model.role==='bomber';
-  const flanker=['苏-27','苏-34','歼-11','歼-16'].includes(model.name);
-  const angular=model.square;
-  const enginesWide=flanker?.91:angular?.88:model.name==='F-15'?.83:.77;
-  const rearZ=bomber?-5.6:-2.64;
+  const flanker=model.flanker;
+  const angular=model.square||model.chine;
+  const enginesWide=flanker?.72:angular?.82:model.name==='F-15'?.83:.77;
+  const rearZ=bomber?-5.6:flanker?-3.28:model.chine?-3.03:-2.64;
   const [rootLead,tipLead,tipTrail,rootTrail,span]=model.wing;
   const rootX=model.hull*.73;
   const crossSections=detailed?(angular?10:14):4;
-  const noseWidth=model.intake?.34:model.duckbill?.49:bomber?.21:.045;
+  const noseWidth=model.intake?.34:model.duckbill?.20:bomber?.21:.045;
   const noseTop=model.intake?.27:model.duckbill?.12:bomber?.13:.035;
-  const shoulderTop=bomber?.68:flanker?.49:angular?.44:.51;
+  const shoulderTop=bomber?.68:flanker?.41:angular?.44:.51;
   const noseStart=model.duckbill?model.nose-.49:model.nose-.43;
   const bodyStations=bomber?[
     [model.nose,noseWidth,noseTop,-.12],[noseStart,.67,.42,-.43],[3.88,model.hull,.62,-.59],
     [2.03,model.hull*1.06,.65,-.64],[.15,model.hull*1.07,.68,-.67],
     [-2.60,model.hull,.58,-.57],[-4.16,model.hull*.74,.43,-.40],[rearZ,.18,.22,-.16]
+  ]:flanker?[
+    [model.nose,noseWidth,noseTop-.12,-.15],
+    ...(model.duckbill?[[model.nose-.19,.44,.095,-.13]]:[]),
+    [noseStart,model.duckbill?.62:.19,.16,-.27],
+    [model.nose-1.16,model.duckbill?.81:.37,.29,-.30],
+    [2.70,model.hull*(model.duckbill?.96:.70),.38,-.34],
+    [1.64,model.hull,shoulderTop,-.39],[.32,model.hull*1.07,shoulderTop*.91,-.37],
+    [-1.08,model.hull*.96,.315,-.29],[-1.87,model.hull*.70,.22,-.19],
+    [-2.47,model.hull*.29,.15,-.115],[-2.97,.13,.09,-.07],[rearZ,.048,.035,-.03]
+  ]:model.intake?[
+    [model.nose,.34,.27,-.28],[model.nose-.31,.40,.30,-.32],
+    [model.nose-1.09,.43,.34,-.36],[1.77,.43,.39,-.39],
+    [.56,.46,.46,-.405],[-.84,.455,.44,-.40],
+    [-1.76,.42,.35,-.36],[rearZ,.37,.25,-.30]
   ]:[
     [model.nose,noseWidth,noseTop,model.intake?-.28:-.065],
     [noseStart,model.intake?.42:model.duckbill?.65:.23,model.intake?.35:.18,-.20],
@@ -513,7 +559,11 @@ function jetGeometry(model,detailed) {
     const start=bodyStations[index-1][0], end=bodyStations[index][0];
     return hullValues(index-1,(z-start)/(end-start))[2];
   }
-  const wingBow=flanker?.76:model.strakes?.83:angular?.27:model.intake?.14:bomber?.24:.42;
+  const [knee,leadAtKnee,trailAtKnee]=model.knee;
+  function edgeAt(fraction,early,atKnee,tip) {
+    return fraction<knee?mix(early,atKnee,fraction/knee):mix(atKnee,tip,(fraction-knee)/(1-knee));
+  }
+  const leadingAt=fraction=>edgeAt(fraction,rootLead,leadAtKnee,tipLead);
   for(const side of [-1,1]) {
     const p=(x,y,z)=>[side*x,y,z];
     const face=(a,b,c,paint,part)=>side>0?tri(a,c,b,paint,part):tri(a,b,c,paint,part);
@@ -550,22 +600,20 @@ function jetGeometry(model,detailed) {
       }
     }
     const wingPoint=(spanFraction,chord,sideOfWing)=>{
-      const bow=Math.sin(Math.PI*spanFraction);
-      const leading=mix(rootLead,tipLead,spanFraction)+wingBow*bow;
-      const trailing=mix(rootTrail,tipTrail,spanFraction)-.13*bow;
-      const camber=(bomber?.18:.13)*Math.sin(Math.PI*chord)*(1-.66*spanFraction);
-      const y=mix(.035,bomber?-.12:.075,spanFraction)+sideOfWing*(camber+.024*(1-spanFraction));
+      const leading=leadingAt(spanFraction);
+      const trailing=edgeAt(spanFraction,rootTrail,trailAtKnee,tipTrail);
+      const camber=(bomber?.12:.073)*Math.sin(Math.PI*chord)*(1-.66*spanFraction);
+      const y=mix(.065,bomber?-.10:.079,spanFraction)+sideOfWing*(camber+.023*(1-spanFraction));
       return p(mix(rootX,span,spanFraction),y,mix(leading,trailing,chord));
     };
-    const ribs=detailed?[0,.12,.23,.38,.54,.68,.73,.78,.90,1]:[0,.68,.78,1];
+    const ribs=detailed?[0,.09,knee,.33,.49,.63,.78,.90,1]:[0,knee,.58,1];
     const chord=detailed?[0,.06,.18,.36,.55,.72,.85,1]:[0,1];
     for(let rib=1;rib<ribs.length;rib++) {
       const start=ribs[rib-1], end=ribs[rib];
-      const accent=start>=.68&&end<=.78;
       for(let strip=1;strip<chord.length;strip++) {
         const fore=chord[strip-1], aft=chord[strip];
         const part=fore>=.72 && start>=.38 && end<=.9?(side<0?1:2):0;
-        const paint=accent?5:part?model.trim:strip===1?11:model.paint;
+        const paint=part?model.trim:strip===1?11:model.paint;
         const a=wingPoint(start,fore,1), b=wingPoint(end,fore,1);
         const c=wingPoint(end,aft,1), d=wingPoint(start,aft,1);
         plate(d,c,b,a,paint,part);
@@ -598,24 +646,31 @@ function jetGeometry(model,detailed) {
     if(model.stabilizers||bomber) {
       const tailScale=bomber?1.6:1;
       const root=bomber?-3.80:-1.77;
-      foil([p(model.hull*.6,.11,root),p(span*.47,.15,root-.96*tailScale),
-        p(span*.43,.115,root-1.5*tailScale),p(model.hull*.64,.08,root-1.08*tailScale)],
+      const tailSpan=span*(flanker?.68:model.chin?.56:model.square?.76:angular?.65:.50);
+      const inside=flanker?.58:model.hull*.6;
+      foil([p(inside,.12,root),p(tailSpan,.15,root-(flanker?.95:.96)*tailScale),
+        p(tailSpan*(flanker?.98:.90),.115,root-(flanker?1.38:1.5)*tailScale),
+        p(flanker?.55:model.hull*.64,.08,root-(flanker?.97:1.08)*tailScale)],
         bomber?.11:.075,false,model.trim);
     }
     if(model.canard) {
-      const hinge=model.duckbill?2.26:1.93;
-      foil([p(model.hull*.68,.16,hinge+.2),p(span*(model.duckbill?.40:.49),.13,hinge-.25),
-        p(span*.43,.12,hinge-.47),p(model.hull*.79,.11,hinge-.65)],.065,false,model.trim);
+      const hinge=model.duckbill?2.30:2.11;
+      const canardTip=span*(model.duckbill?.51:.62);
+      foil([p(model.hull*.72,.18,hinge+.31),p(canardTip,.19,hinge-.07),
+        p(canardTip*.94,.16,hinge-.39),p(model.hull*.82,.14,hinge-.68)],.060,false,model.paint);
     }
-    if(model.strakes||flanker||angular) {
-      const forward=model.strakes?2.67:flanker?2.49:1.94;
-      const leading=wingPoint(.31,0,1), joint=wingPoint(.04,.27,1);
-      plate(p(model.hull*.52,.24,forward),p(model.hull*.94,.19,forward-.63),leading,joint,model.trim);
+    if(model.strakes||flanker||angular||model.chin) {
+      const forward=model.strakes?2.62:flanker?2.75:model.chin?2.21:2.08;
+      const leading=wingPoint(knee,0,1), joint=wingPoint(.025,.20,1);
+      const origin=p(model.hull*.62,.125,forward);
+      const shoulder=p(model.hull*.96,.098,forward-.96);
+      plate(origin,shoulder,leading,joint,model.paint);
+      plate(add(origin,[0,-.035,0]),joint,leading,add(shoulder,[0,-.055,0]),10);
     }
     const [finRoot,cant,finHeight]=model.fins;
     if(finRoot>0||side===1) {
-      const foot=bomber?-3.7:model.intake?-1.06:angular?-1.38:-1.24;
-      const sweep=bomber?1:angular?.52:.66;
+      const foot=bomber?-3.7:model.intake?-1.06:angular?-1.38:flanker?-1.14:-1.24;
+      const sweep=bomber?1:angular?.52:flanker?.74:.66;
       const a=p(finRoot,bomber?.33:.18,foot), b=p(finRoot+cant,finHeight,foot-sweep);
       const c=p(finRoot+cant,finHeight-.03,foot-sweep-(bomber?.62:angular?.69:.41)),
         d=p(finRoot,bomber?.27:.11,foot-(bomber?1.80:1.47));
@@ -623,15 +678,15 @@ function jetGeometry(model,detailed) {
       if(detailed) {
         const widthSide=side*.067;
         const strip=(first,last,t)=>add(blend(first,last,t),[widthSide,0,0]);
-        plate(strip(a,b,.59),strip(d,c,.59),strip(d,c,.68),strip(a,b,.68),5);
+        if(!flanker) plate(strip(a,b,.59),strip(d,c,.59),strip(d,c,.68),strip(a,b,.68),5);
         const back=(point)=>add(point,[side*.038,0,-.04]);
         plate(back(blend(a,d,.73)),back(blend(b,c,.74)),back(blend(b,c,.79)),back(blend(a,d,.79)),10);
       }
     }
-    const canopyLead=bomber?model.nose-.58:model.duckbill?2.70:model.intake?1.90:angular?2.05:2.19;
-    const canopyRear=bomber?model.nose-2.10:model.tandem||model.duckbill?-.46:model.chin?.1:.32;
-    const canopyWidth=model.hull*(model.duckbill?.69:bomber?.91:model.chin?.70:.58);
-    const canopyRise=bomber?.26:model.duckbill?.33:model.chin?.44:.36;
+    const canopyLead=bomber?model.nose-.58:model.duckbill?3.28:flanker?3.69:model.intake?2.27:model.chine?2.60:angular?2.23:2.38;
+    const canopyRear=bomber?model.nose-2.10:model.duckbill?1.56:model.tandem?1.50:flanker?2.13:model.chin?.52:.54;
+    const canopyWidth=model.hull*(model.duckbill?.72:bomber?.91:flanker?.42:model.chin?.70:.58);
+    const canopyRise=bomber?.26:model.duckbill?.30:flanker?.26:model.chin?.46:.36;
     const arches=detailed?12:3;
     const frames=detailed?[0,.07,.16,.28,.42,.45,.56,.67,.73,.76,.87,.95,1]:[0,.36,.67,1];
     const glassAt=(t,angle)=>{
@@ -651,8 +706,7 @@ function jetGeometry(model,detailed) {
   if(bomber) {
     const pods=model.pods==='root'?[.24]:[.33,.62];
     for(const side of [-1,1]) for(const spanFraction of pods) {
-      const flare=Math.sin(spanFraction*Math.PI)*wingBow;
-      const z=mix(rootLead,tipLead,spanFraction)+flare;
+      const z=leadingAt(spanFraction);
       const center=side*span*spanFraction, cy=model.pods==='prop'?.035:-.30;
       const offsets=model.pods==='twin'?[-.245,.245]:[0];
       for(const offset of offsets) {
@@ -690,16 +744,16 @@ function jetGeometry(model,detailed) {
     const centers=model.engines===1?[0]:[-model.hull*enginesWide,model.hull*enginesWide];
     for(const center of centers) {
       const box=model.name==='F-22';
-      const radius=model.engines===1?.41:flanker?.33:.29;
-      const rise=model.chin?-.27:flanker?-.24:-.14;
+      const radius=model.engines===1?.41:flanker?.285:.29;
+      const rise=model.chin?-.27:flanker?-.33:-.14;
       const outer=box?4:detailed?20:8;
       if(!model.intake) {
-        const slotZ=model.chin?1.88:flanker?1.51:model.strakes?1.76:angular?1.40:1.58;
+        const slotZ=model.chin?1.65:flanker?1.63:model.strakes?1.68:model.chine?2.08:angular?1.40:1.58;
         const intakeRings=tube(center,[
           [slotZ,radius*(model.chin?1.27:1.26),radius*.66,rise],
           [slotZ-.12,radius*1.32,radius*.76,rise],[slotZ-.39,radius*1.13,radius*.88,rise],
           [-.61,radius*1.16,radius*.97,rise],[-1.87,radius*1.14,radius*.92,rise]
-        ],box||model.name==='F-15'?4:outer,(station,segment)=>station===1?11:segment<outer/2?model.paint:10);
+        ],box||flanker||model.name==='F-15'?4:outer,(station,segment)=>station===1?11:segment<outer/2?model.paint:10);
         const lip=intakeRings[0], opening=lip.map(point=>[mix(center,point[0],.76),mix(rise,point[1],.67),slotZ-.018]);
         for(let i=0;i<lip.length;i++) {
           const next=(i+1)%lip.length;
@@ -707,23 +761,25 @@ function jetGeometry(model,detailed) {
           tri(opening[i],opening[next],[center,rise,slotZ-.23],4);
         }
       }
+      const nozzleHeight=flanker?-.105:rise;
       const nozzle=tube(center,[
-        [-1.83,radius*1.10,radius*.97,rise],[-2.15,radius*1.14,radius,rise],[-2.32,radius*1.10,radius*.90,rise],
-        [-2.48,radius*1.07,radius*.83,rise],[-2.685,radius*.97,radius*.72,rise],
-        [-2.73,radius*.82,radius*.64,rise],[-2.61,radius*.69,radius*.52,rise]
+        [-1.83,radius*1.10,radius*.97,mix(rise,nozzleHeight,.37)],[-2.15,radius*1.14,radius,nozzleHeight],
+        [-2.32,radius*1.10,radius*.90,nozzleHeight],[-2.48,radius*1.07,radius*.83,nozzleHeight],
+        [-2.685,radius*.97,radius*.72,nozzleHeight],[-2.73,radius*.82,radius*.64,nozzleHeight],
+        [-2.61,radius*.69,radius*.52,nozzleHeight]
       ],outer,(station,segment)=>station<2?model.paint:station===3||station===5?14:segment%2===0?10:14);
       for(let i=0;i<outer;i++) {
         const next=(i+1)%outer;
-        tri(nozzle[6][next],nozzle[6][i],[center,rise,-2.58],4);
+        tri(nozzle[6][next],nozzle[6][i],[center,nozzleHeight,-2.58],4);
       }
       if(detailed) {
         // Exhaust uses a smaller separate fan to keep distant dithering stable as throttle changes.
         const count=8;
         for(let i=0;i<count;i++) {
           const outerPoint=(part,scale,z)=>[center+Math.cos(part*2*Math.PI/count)*radius*scale,
-            rise+Math.sin(part*2*Math.PI/count)*radius*scale*.74,z];
-          tri(outerPoint(i,.80,-2.735),outerPoint(i+1,.80,-2.735),[center,rise,-6.65],6,3);
-          tri(outerPoint(i,.41,-2.74),outerPoint(i+1,.41,-2.74),[center,rise,-5.55],7,3);
+            nozzleHeight+Math.sin(part*2*Math.PI/count)*radius*scale*.74,z];
+          tri(outerPoint(i,.80,-2.735),outerPoint(i+1,.80,-2.735),[center,nozzleHeight,-6.65],6,3);
+          tri(outerPoint(i,.41,-2.74),outerPoint(i+1,.41,-2.74),[center,nozzleHeight,-5.55],7,3);
         }
       }
     }
@@ -806,6 +862,8 @@ function setupGraphics() {
     gl.uniformMatrix3fv(u.view,false,[...camera.right,...camera.up,...camera.forward]);
     gl.uniform2f(u.resolution,world.width,world.height);
     gl.uniform2fv(u.screenOffset,screenOffset);
+    gl.uniform1f(u.orthographic,camera.orthographic||0);
+    gl.uniform1i(u.studio,Boolean(camera.studio));
     gl.uniform2f(u.control,aircraft.stick[0],aircraft.stick[1]);
     const span=aircraftModels[modelIndex].wing[4];
     gl.uniform2f(u.propPivots,span*.33,span*.62);
@@ -826,7 +884,7 @@ function setupGraphics() {
       terrainReady=true;
     },
     compileJet() {
-      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset propPivots propAngle lens thrust forward flicker visibility');
+      jet=program(jetVertex,jetFragment,'jetPosition eye attitude view resolution control screenOffset propPivots propAngle lens thrust forward flicker visibility orthographic studio');
     }
   };
 }
@@ -1739,28 +1797,38 @@ function campaignBriefing() {
   canvasButton('executeBrief','本章出击',x+w-12-bw,y+h-30,bw,20,true,11);
 }
 
-let hangar=false, hangarYaw=.78, hangarPitch=.38, hangarDrag=null;
+const hangarViews=[
+  {label:'斜视'}, {label:'顶视',axis:[0,1,0],up:[0,0,1]},
+  {label:'侧视',axis:[1,0,0],up:[0,1,0]}, {label:'正视',axis:[0,0,1],up:[0,1,0]}
+];
+let hangar=false, hangarView=0, hangarYaw=.82, hangarPitch=.41, hangarDrag=null;
 function hangarScreen(time) {
   gl.clearColor(.125,.094,.176,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
   const narrow=width<390, profile=selectedModel();
   const rowWidth=narrow?Math.floor((width-38)/2):Math.min(120,Math.floor(width*.26));
   const w=narrow?width-30:Math.min(171,Math.floor(width*.29));
+  const listTop=narrow?Math.min(Math.round(height*.55),height-137):62;
   const left=narrow?9:rowWidth+24, right=narrow?width-9:width-w-24;
-  const previewWidth=right-left, previewCenter=(left+right)/2, lens=.61;
+  const previewTop=52, previewBottom=narrow?listTop-31:height-55;
+  const previewSize=Math.min(right-left,previewBottom-previewTop);
+  const previewCenter=(left+right)/2, lens=.61;
   // Fit the enclosing sphere in the space between the two panels at every orbit angle.
   const radius=Math.max(profile.nose,profile.wing[4])+.35;
-  const distance=Math.max(narrow?15.5:10.6,Math.hypot(radius,height*radius/(lens*previewWidth)));
-  const eye=[Math.sin(hangarYaw)*distance,Math.sin(hangarPitch)*distance,Math.cos(hangarYaw)*distance];
-  const modelCamera=makeCamera(eye,mul(eye,-1),[0,1,0],lens);
+  const distance=Math.max(10.6,Math.hypot(radius,height*radius/(lens*previewSize)));
+  const view=hangarViews[hangarView];
+  const orbit=[Math.sin(hangarYaw)*Math.cos(hangarPitch),Math.sin(hangarPitch),Math.cos(hangarYaw)*Math.cos(hangarPitch)];
+  const eye=mul(view.axis||orbit,distance);
+  const modelCamera=makeCamera(eye,mul(eye,-1),view.up||[0,1,0],lens);
+  modelCamera.studio=true;
+  if(view.axis) modelCamera.orthographic=previewSize/(height*radius);
   const model={position:[0,0,0],attitude:[0,0,0,1],stick:[0,0,0],thrust:0};
-  renderJet(modelCamera,model,time,1,[2*previewCenter/width-1,narrow?.32:.035]);
+  renderJet(modelCamera,model,time,1,[2*previewCenter/width-1,1-(previewTop+previewBottom)/height]);
   rect(0,0,width,49,colors.black);
   line(0,48,width-1,48,colors.haze);
   type('机库',19,29,20,colors.cream,'display');
   type('选择你的飞机',narrow?74:91,28,11,colors.gold);
   canvasButton('closeHangar','返回',width-69,15,52,21,false,11);
-  const listTop=narrow?Math.min(Math.round(height*.55),height-167):62;
   const available=compatibleAircraft();
   const columns=narrow?2:1, rowCount=Math.ceil(available.length/columns);
   const rowHeight=narrow?Math.min(19,Math.floor((height-listTop-92)/rowCount)):
@@ -1797,7 +1865,17 @@ function hangarScreen(time) {
     [mockupX+25,mockupY-2],[mockupX+34,mockupY],[mockupX+25,mockupY+2],[mockupX+9,mockupY+2],
     [mockupX+5,mockupY+fin],[mockupX,mockupY+2]],projectile.glow);
   rect(mockupX+7,mockupY-1,2,3,colors.plum);
-  type(touch?'拖动机体旋转':'拖动旋转 · 左右切换机型',width/2,narrow?listTop-9:height-20,10,colors.gold,'mono','center');
+  const buttonWidth=Math.min(47,Math.floor(((narrow?width-22:right-left)-9)/4)), buttonSpan=(buttonWidth+3)*4-3;
+  const viewCenter=narrow?width/2:previewCenter, viewY=narrow?listTop-28:height-51;
+  hitBoxes.hangarViews=hangarViews.map(({label},index)=>{
+    const x=Math.round(viewCenter-buttonSpan/2+index*(buttonWidth+3));
+    const slot=[x,viewY,buttonWidth,19];
+    rect(...slot,index===hangarView?colors.gold:colors.black);
+    border(...slot,index===hangarView?colors.cream:colors.haze);
+    type(label,x+buttonWidth/2,viewY+13,10,index===hangarView?colors.ink:colors.cream,'mono','center');
+    return slot;
+  });
+  if(!narrow) type(touch?'斜视可拖动旋转':'斜视可拖动旋转 · 左右切换机型',viewCenter,height-18,10,colors.gold,'mono','center');
 }
 
 // Cockpit and HUD. A three-threshold mask reveals the airframe when the canopy exits.
@@ -2734,8 +2812,10 @@ glass.addEventListener('pointerdown',event=>{
     if(inside(p,hitBoxes.closeHangar)) toggleHangar();
     else {
       const choice=hitBoxes.aircraftChoices?.find(entry=>inside(p,entry.slot));
-      if(choice) selectedAircraft=choice.index;
-      else {
+      const view=hitBoxes.hangarViews?.findIndex(slot=>inside(p,slot))??-1;
+      if(view>=0) hangarView=view;
+      else if(choice) selectedAircraft=choice.index;
+      else if(hangarView===0) {
         hangarDrag={id:event.pointerId,point:p};
         glass.setPointerCapture(event.pointerId);
       }
@@ -2796,6 +2876,7 @@ glass.addEventListener('pointermove',event=>{
     'previousMission','nextMission','pause','continueFlight','restartMission','returnToTitle',
     'campaignBrief','closeBrief','executeBrief','nextChapter','beaconDrop']
     .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(entry=>inside(p,entry.slot)) ||
+    hitBoxes.hangarViews?.some(slot=>inside(p,slot)) ||
     hitBoxes.radarTargets?.some(point=>Math.hypot(p[0]-point.x,p[1]-point.y)<8);
   glass.style.cursor=overButton?'pointer':hangar?(hangarDrag?'grabbing':'grab'):flying&&!touch&&!paused?'crosshair':'default';
   if(event.pointerId===throttlePointer) throttleAt(p[1]);
