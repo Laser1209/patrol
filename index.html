@@ -12,7 +12,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelate
 #world{pointer-events:none}
 </style>
 <canvas id="world" aria-hidden="true"></canvas>
-<canvas id="glass" aria-label="PATROL，按回车出击，按 C 切换视角"></canvas>
+<canvas id="glass" aria-label="PATROL，按回车进入当前选项，按 C 切换飞行视角"></canvas>
 <script>
 'use strict';
 
@@ -1042,12 +1042,12 @@ function airContact(x,y,z) {
   return position;
 }
 const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'干扰机',
-  interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点'};
+  interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点',rival:'对手机'};
 const targetProfiles={
   drone:{air:true,health:17},interceptor:{air:true,health:24,skill:2},
   guardian:{air:true,health:33,skill:1},
   lookout:{air:true,health:24},jammer:{air:true,health:23},
-  ground:{health:19},convoy:{health:18},relay:{health:20},beacon:{health:1}
+  ground:{health:19},convoy:{health:18},relay:{health:20},beacon:{health:1},rival:{air:true}
 };
 const isAirContact=target=>Boolean(targetProfiles[target.kind]?.air);
 const isHostileContact=target=>target.kind!=='beacon';
@@ -1348,6 +1348,7 @@ function createBurst(position,large) {
   if(large) playCue('impact');
 }
 function scoreHit(target,damage,missile=false) {
+  if(target.kind==='rival') {scoreLanRivalHit(target,damage,missile);return;}
   if(target.health<=0) {
     if(missile) createBurst(target.position,true);
     return;
@@ -1441,7 +1442,7 @@ function updateIncomingEvasion(incoming,dt) {
   playCue('lock');
   return true;
 }
-function updateMission(dt) {
+function updateMission(dt,advanceWorld=true) {
   if(!mission) return;
   const {config}=mission;
   mission.pulseTime=Math.max(0,mission.pulseTime-dt);
@@ -1457,31 +1458,35 @@ function updateMission(dt) {
       if(effect.kind==='tracer') effect.position=projectilePoint(effect,1-effect.life/effect.duration);
     } else {
       mission.effects.splice(i,1);
-      if(effect.kind==='tracer' && !mission.recoveryTime) scoreHit(effect.target,mission.tracerDamage,true);
+      if(effect.kind==='tracer' && !effect.deflected && !mission.recoveryTime) scoreHit(effect.target,mission.tracerDamage,true);
     }
   }
   if(mission.recoveryTime>0) return;
-  for(const target of mission.targets) {
-    if(!target.health || !isAirContact(target)) continue;
-    const skill=airContactSkill(target,config);
-    const motion=flightPatterns[target.kind];
-    const wave=simulationTime*(motion[0]+skill*.13)+target.phase;
-    const width=motion[1]+skill*22;
-    const nearLock=skill>0 && target===mission.locked && mission.charge>.3;
-    const evadeTick=Math.floor((simulationTime+target.phase)*1.1);
-    if(nearLock && evadeTick!==target.evadeTick) target.evadeTick=evadeTick;
-    target.evade=approach(target.evade,nearLock?(target.evadeTick%2?1:-1)*(skill===2?62:26):0,2.7,dt);
-    const x=target.center[0]+Math.sin(wave)*width+target.evade;
-    const z=target.center[2]+Math.sin(wave*.73)*width*.92;
-    const y=target.center[1]+Math.sin(wave*(1+skill*.4))*(motion[2]+skill*7)+Math.abs(target.evade)*.29;
-    const offset=sub([x,y,z],target.position);
-    if(Math.hypot(offset[0],offset[2])>.015) target.heading=Math.atan2(offset[0],offset[2]);
-    target.position=[x,Math.max(y,solidHeight(x,z)+22),z];
+  if(advanceWorld) {
+    for(const target of mission.targets) {
+      const motion=flightPatterns[target.kind];
+      if(!target.health || !motion) continue;
+      const skill=airContactSkill(target,config);
+      const wave=simulationTime*(motion[0]+skill*.13)+target.phase;
+      const width=motion[1]+skill*22;
+      const nearLock=skill>0 && target===mission.locked && mission.charge>.3;
+      const evadeTick=Math.floor((simulationTime+target.phase)*1.1);
+      if(nearLock && evadeTick!==target.evadeTick) target.evadeTick=evadeTick;
+      target.evade=approach(target.evade,nearLock?(target.evadeTick%2?1:-1)*(skill===2?62:26):0,2.7,dt);
+      const x=target.center[0]+Math.sin(wave)*width+target.evade;
+      const z=target.center[2]+Math.sin(wave*.73)*width*.92;
+      const y=target.center[1]+Math.sin(wave*(1+skill*.4))*(motion[2]+skill*7)+Math.abs(target.evade)*.29;
+      const offset=sub([x,y,z],target.position);
+      if(Math.hypot(offset[0],offset[2])>.015) target.heading=Math.atan2(offset[0],offset[2]);
+      target.position=[x,Math.max(y,solidHeight(x,z)+22),z];
+    }
+    updateCampaign(dt);
   }
-  updateCampaign(dt);
   updateTargetLock(dt);
-  if(keys.has('KeyJ')||combatPointers.get('pulse')!==undefined) firePulse();
-  if(keys.has('KeyK')||combatPointers.get('tracer')!==undefined) fireTracer();
+  if(advanceWorld && !lanInputBlocked()) {
+    if(keys.has('KeyJ')||combatPointers.get('pulse')!==undefined) firePulse();
+    if(keys.has('KeyK')||combatPointers.get('tracer')!==undefined) fireTracer();
+  }
   if(mission.complete || !config.skill) return;
   const incoming=mission.incoming;
   if(incoming) {
@@ -1513,19 +1518,10 @@ function spray(position,velocity,water) {
   if(particles.length>130) particles.splice(0,particles.length-130);
 }
 const step=1/120;
-function simulate(dt) {
-  previous=aircraft;
-  const s=aircraft;
-  const input=[
-    Number(keys.has('KeyS'))-Number(keys.has('KeyW'))+(drag?.pitch||0),
-    Number(keys.has('KeyD'))-Number(keys.has('KeyA'))+(drag?.roll||0),
-    Number(keys.has('KeyE'))-Number(keys.has('KeyQ'))
-  ].map(v=>clamp(v,-1,1));
+function stepFlight(s,input,throttle,dt,aero,onGround) {
   const stick=s.stick.map((v,i)=>approach(v,input[i],10,dt));
-  const throttle=touchThrottle===null?clamp(s.throttle+(.53*dt)*(Number(keys.has('ShiftLeft')||keys.has('ShiftRight'))-
-    Number(keys.has('ControlLeft')||keys.has('ControlRight'))),0,1):touchThrottle;
   const thrust=approach(s.thrust,throttle,4.5,dt);
-  const environment=flightEnvironment(), aero=selectedAero();
+  const environment=flightEnvironment();
   const phase=simulationTime*.63+s.position[2]*.009;
   const wind=add(environment.wind,[Math.sin(phase)*environment.gust,
     Math.sin(phase*1.47)*environment.gust*.24,Math.cos(phase*.81)*environment.gust*.6]);
@@ -1558,13 +1554,7 @@ function simulate(dt) {
   let nextAttitude=attitude;
   if(position[1]<surface+2.6) {
     position[1]=surface+2.6;
-    if(impact<.22) {
-      impact=1;
-      remember('boundary');
-      spray([position[0],surface+.5,position[2]],velocity,ground<0);
-      damageAircraft(ground<0?6:12,ground<0?'触水刮伤':'地形擦碰');
-      velocity=mul(velocity,.75);
-    }
+    if(onGround?.(position,velocity,ground,surface)) velocity=mul(velocity,.75);
     velocity[1]=Math.max(7,Math.abs(velocity[1])*.18+5);
     nextAttitude=blendAttitude(attitude,quatMultiply(axisAngle([0,1,0],Math.atan2(forward[0],forward[2])),
       axisAngle([-1,0,0],.24)),.23);
@@ -1572,8 +1562,34 @@ function simulate(dt) {
   const agl=position[1]-surface, speed=length(sub(velocity,wind));
   const stallMeter=clamp((s.stallMeter||0)+dt*(Math.abs(alpha)>aero.stallAngle?1:-2.4),0,.62);
   const stall=s.stall?stallMeter>.08:stallMeter>.30;
-  aircraft={position,velocity,attitude:nextAttitude,stick,rates,throttle,thrust,speed,
+  return {position,velocity,attitude:nextAttitude,stick,rates,throttle,thrust,speed,
     bank:bankOf(basisOf(nextAttitude)),agl,g:approach(s.g,lift/9.81,8,dt),stall,stallMeter};
+}
+function readFlightStick() {
+  return [
+    Number(keys.has('KeyS'))-Number(keys.has('KeyW'))+(drag?.pitch||0),
+    Number(keys.has('KeyD'))-Number(keys.has('KeyA'))+(drag?.roll||0),
+    Number(keys.has('KeyE'))-Number(keys.has('KeyQ'))
+  ].map(v=>clamp(v,-1,1));
+}
+function readThrottleAxis() {
+  return Number(keys.has('ShiftLeft')||keys.has('ShiftRight'))-
+    Number(keys.has('ControlLeft')||keys.has('ControlRight'));
+}
+function simulate(dt) {
+  previous=aircraft;
+  const aero=selectedAero();
+  const blocked=lanInputBlocked();
+  const throttle=blocked?aircraft.throttle:touchThrottle??clamp(aircraft.throttle+.53*dt*readThrottleAxis(),0,1);
+  aircraft=stepFlight(aircraft,blocked?[0,0,0]:readFlightStick(),throttle,dt,aero,(position,velocity,ground,surface)=>{
+    if(impact>=.22) return false;
+    impact=1;
+    if(!lanMatch) remember('boundary');
+    spray([position[0],surface+.5,position[2]],velocity,ground<0);
+    damageAircraft(ground<0?6:12,ground<0?'触水刮伤':'地形擦碰');
+    return true;
+  });
+  const {agl,velocity,stall,speed}=aircraft;
   warning=agl<17 && (velocity[1]<2||agl<8)?'拉起':stall?'失速':speed<aero.cruise*.53?'低速':speed>109?'超速':'';
   impact=Math.max(0,impact-dt*2.3);
   for(let i=particles.length-1;i>=0;i--) {
@@ -1583,9 +1599,224 @@ function simulate(dt) {
     p.velocity[1]-=dt*27;
     for(let axis=0;axis<3;axis++) p.position[axis]+=p.velocity[axis]*dt;
   }
-  updateTutorial(dt);
+  if(!lanMatch) updateTutorial(dt);
   updateAircraftDamage(dt);
   updateMission(dt);
+  updateWingman(dt);
+  if(lanMatch) stepLanMatch(dt);
+}
+
+// Friendly autopilot. The wingmate owns its own pose and stays out of the hostile contact list.
+const wingmanModes=['follow','assist','rejoin'];
+let wingmanEnabled=true, wingman=null;
+
+function makeWingman(model,pose,health=100,mode='follow') {
+  return {model,mode,health,current:pose,previous:pose,cooldown:0,scanTime:0,
+    target:null,contactTime:0,status:health>0?'跟随中':'已脱离'};
+}
+
+function resetWingman(modelIndex) {
+  wingman=null;
+  const forced=Number.isInteger(modelIndex)&&aircraftModels[modelIndex];
+  if(!wingmanEnabled&&!forced || !aircraft) return;
+  const model=forced?modelIndex:selectedModel().role==='bomber'?0:selectedAircraft;
+  const forward=radarHeading(aircraft), right=[forward[2],0,-forward[0]];
+  const position=add(add(aircraft.position,mul(forward,33)),mul(right,18));
+  position[1]=Math.max(position[1]+3,solidHeight(position[0],position[2])+16);
+  const heading=Math.atan2(forward[0],forward[2]);
+  wingman=makeWingman(model,{position,velocity:aircraft.velocity.slice(),
+    attitude:axisAngle([0,1,0],heading),heading,thrust:.55,stick:[0,0,0]});
+}
+
+function commandWingman(mode) {
+  if(!flying || paused || !wingman?.health || !wingmanModes.includes(mode)) return false;
+  wingman.mode=mode;
+  return true;
+}
+
+function cycleWingmanCommand() {
+  if(!wingman) return false;
+  return commandWingman(wingmanModes[(wingmanModes.indexOf(wingman.mode)+1)%wingmanModes.length]);
+}
+
+function wingmanSnapshot() {
+  if(!wingman) return null;
+  const {model,health,mode,current}=wingman;
+  const {position,velocity,attitude,heading,thrust}=current;
+  return {model,health,mode,position:position.slice(),velocity:velocity.slice(),
+    attitude:attitude.slice(),heading,thrust};
+}
+
+function restoreWingman(saved) {
+  if(saved===null) {wingman=null;return;}
+  const validVector=(value,size)=>Array.isArray(value)&&value.length===size&&value.every(Number.isFinite);
+  if(!saved || !Number.isInteger(saved.model) || !aircraftModels[saved.model] ||
+    !validVector(saved.position,3) || !validVector(saved.velocity,3) || !validVector(saved.attitude,4) ||
+    !Number.isFinite(saved.heading) || !Number.isFinite(saved.thrust) || !Number.isFinite(saved.health) ||
+    Math.abs(length(saved.attitude)-1)>.01 || !wingmanModes.includes(saved.mode)) {
+    resetWingman();return;
+  }
+  const {model,health,mode,position,velocity,attitude,heading,thrust}=saved;
+  wingman=makeWingman(model,{position:position.slice(),velocity:velocity.slice(),attitude:attitude.slice(),
+    heading,thrust:clamp(thrust,0,1),stick:[0,0,0]},clamp(health,0,100),mode);
+}
+
+function updateWingman(dt) {
+  if(!wingman || !mission) return;
+  const ally=wingman, pose=ally.current;
+  ally.previous=pose;
+  if(ally.health<=0) {ally.status='已脱离';return;}
+
+  const leaderVelocity=aircraft.velocity;
+  const forward=Math.hypot(leaderVelocity[0],leaderVelocity[2])>12?
+    unit([leaderVelocity[0],0,leaderVelocity[2]]):radarHeading(aircraft);
+  const right=[forward[2],0,-forward[0]];
+  const desired=add(add(aircraft.position,mul(forward,-19)),mul(right,23));
+  desired[1]+=5;
+  const distance=length(sub(pose.position,aircraft.position));
+  const returning=ally.mode==='rejoin'||distance>106;
+  const escort=mission.config.role==='bomber';
+  const supporting=(ally.mode==='assist'||escort)&&!returning&&!mission.complete&&!mission.recoveryTime;
+  ally.cooldown=Math.max(0,ally.cooldown-dt);
+  ally.scanTime-=dt;
+  if(ally.scanTime<=0) {
+    ally.scanTime=.18;
+    ally.target=null;
+    let nearest=174;
+    for(const target of mission.targets) {
+      if(!supporting || target===mission.locked || target.health<=1 || !isAirContact(target)) continue;
+      const range=length(sub(target.position,pose.position));
+      if(range<nearest && length(sub(target.position,aircraft.position))<195) {
+        nearest=range;ally.target=target;
+      }
+    }
+    // The scripted hazard keeps the toy wingmate vulnerable near hostile contacts.
+    // It uses only game-space range and elapsed time, independent of player equipment.
+    const nearHostiles=mission.config.skill>0&&mission.targets.some(target=>target.health>0&&
+      isAirContact(target)&&length(sub(target.position,pose.position))<72);
+    ally.contactTime=nearHostiles?ally.contactTime+.18:Math.max(0,ally.contactTime-.45);
+    if(ally.contactTime>=4) {
+      ally.health=Math.max(0,ally.health-14);
+      ally.contactTime=0;
+      if(ally.health===0) {
+        ally.status='已脱离';
+        createBurst(pose.position,false);
+        return;
+      }
+    }
+  }
+
+  const target=supporting&&ally.target?.health>1&&ally.target!==mission.locked?ally.target:null;
+  const active=target&&mission.targets.includes(target);
+  ally.status=returning?'返队中':active?'交战中':escort?'护航中':'跟随中';
+  if(ally.mode==='rejoin'&&length(sub(desired,pose.position))<13) ally.mode='follow';
+  if(active) {
+    // Shift within the formation instead of leaving the player's view to chase a contact.
+    desired[0]+=clamp((target.position[0]-desired[0])*.20,-24,24);
+    desired[2]+=clamp((target.position[2]-desired[2])*.20,-24,24);
+    desired[1]+=clamp((target.position[1]-desired[1])*.12,-5,13);
+    if(!ally.cooldown && length(sub(target.position,pose.position))<142 &&
+      clearSight(pose.position,target.position)) {
+      ally.cooldown=1.65;
+      mission.effects.push({kind:'pulse',friendly:true,life:cannonTraceTime,
+        origin:pose.position.slice(),position:target.position.slice()});
+      scoreHit(target,Math.min(3,target.health-1));
+    }
+  }
+
+  // Borrow the leader's velocity and correct the moving slot error proportionally.
+  // Heading and speed change continuously so a sharp reversal never teleports the wingmate.
+  const error=sub(desired,pose.position);
+  const motion=[leaderVelocity[0]+error[0]*.85,0,leaderVelocity[2]+error[2]*.85];
+  const headingGoal=Math.hypot(motion[0],motion[2])>2?Math.atan2(motion[0],motion[2]):pose.heading;
+  const headingError=wrap(headingGoal-pose.heading+Math.PI,2*Math.PI)-Math.PI;
+  const heading=pose.heading+clamp(headingError*2.7,-1.42,1.42)*dt;
+  const desiredSpeed=clamp(length(motion),23,122);
+  const speed=approach(Math.hypot(pose.velocity[0],pose.velocity[2]),desiredSpeed,2.3,dt);
+  const vx=Math.sin(heading)*speed, vz=Math.cos(heading)*speed;
+  let safeY=desired[1];
+  for(const ahead of [0,.32,.76]) {
+    const surface=Math.max(0,solidHeight(pose.position[0]+vx*ahead,pose.position[2]+vz*ahead));
+    safeY=Math.max(safeY,surface+14);
+  }
+  const climb=clamp((safeY-pose.position[1])*2.2+clamp(leaderVelocity[1]*.34,-9,9),-23,39);
+  let vy=approach(pose.velocity[1],climb,4.3,dt);
+  const position=add(pose.position,[vx*dt,vy*dt,vz*dt]);
+  const floor=Math.max(0,solidHeight(position[0],position[2]))+4;
+  if(position[1]<floor) {
+    position[1]=floor;
+    vy=Math.max(6,vy);
+  }
+  const bank=clamp(headingError*.78,-.66,.66);
+  const pitch=Math.atan2(vy,speed);
+  const attitude=quatMultiply(quatMultiply(axisAngle([0,1,0],heading),axisAngle([1,0,0],-pitch)),
+    axisAngle([0,0,1],-bank));
+  ally.current={position,velocity:[vx,vy,vz],
+    attitude:blendAttitude(pose.attitude,attitude,1-Math.exp(-6.4*dt)),
+    heading,thrust:approach(pose.thrust,clamp(.22+speed*.0055,.32,1),2.2,dt),
+    stick:[-pitch,bank,0]};
+}
+
+function wingmanPose(alpha) {
+  if(!wingman?.health) return null;
+  const {previous,current}=wingman;
+  return {...current,position:blend(previous.position,current.position,alpha),
+    attitude:blendAttitude(previous.attitude,current.attitude,alpha)};
+}
+
+function renderWingman(cam,time,alpha) {
+  const pose=wingmanPose(alpha);
+  if(!pose || !insideView(project(pose.position,cam),-20) || !clearSight(cam.eye,pose.position)) return;
+  renderJet(cam,pose,time,1,[0,0],wingman.model);
+}
+
+function drawWingmanMarker(cam,alpha) {
+  const pose=wingmanPose(alpha);
+  if(!pose) return;
+  const point=project(pose.position,cam);
+  if(!insideView(point,12) || point[1]<69 || point[1]>height-88 || !clearSight(cam.eye,pose.position)) return;
+  const [x,y]=point;
+  const markerY=y-Math.max(9,Math.min(33,690/length(sub(pose.position,cam.eye))));
+  line(x-4,markerY,x+4,markerY,colors.mist);
+  line(x-4,markerY,x-4,markerY+3,colors.mist);
+  line(x+4,markerY,x+4,markerY+3,colors.mist);
+  type('僚机',x,markerY-4,8,colors.frost,'mono','center');
+}
+
+function wingmanRadarDot(s,{x,y,radius,scope,occupied}) {
+  if(!wingman?.health) return;
+  const forward=radarHeading(s), right=[forward[2],0,-forward[0]];
+  const difference=sub(wingman.current.position,s.position);
+  const offset=[dot(difference,right),-dot(difference,forward)];
+  const scale=radius/Math.max(scope,Math.hypot(...offset));
+  const px=Math.round(x+offset[0]*scale), py=Math.round(y+offset[1]*scale);
+  const shift=radarMarkerOffsets.find(([dx,dy])=>
+    Math.abs(px+dx-x)<=radius+2 && Math.abs(py+dy-y)<=radius+2 &&
+    occupied.every(([ox,oy])=>Math.abs(ox-px-dx)>3||Math.abs(oy-py-dy)>3))||[0,0];
+  const mx=px+shift[0], my=py+shift[1];
+  occupied.push([mx,my]);
+  border(mx-2,my-2,5,5,colors.mist);
+  rect(mx-1,my-1,3,3,colors.ink);
+  rect(mx,my,1,1,colors.frost);
+}
+
+function drawWingmanHud() {
+  if(!wingman || paused) return;
+  const health=wingman.health;
+  const command=['编队','协同','返队'][wingmanModes.indexOf(wingman.mode)];
+  const label=health>0?'僚机 · '+wingman.status:'僚机 · 已脱离';
+  const x=screenInsets[3]+13, y=screenInsets[0]+(width<330?46:41);
+  const w=touch?87:100, h=15;
+  rect(x,y,w,h,colors.ink);
+  corners(x,y,w-1,h-1,4,health>0?colors.mist:colors.haze);
+  type(label,x+5,y+10,8,health>0?colors.frost:colors.haze);
+  if(health<=0) return;
+  const glow=health<30?colors.red:colors.mist;
+  rect(x+w-21,y+10,15,2,colors.blue);
+  rect(x+w-21,y+10,Math.ceil(health*.15),2,glow);
+  // The selected command is separate from the autopilot's transient status.
+  type(command,x+w-13,y+8,6,glow,'mono','center');
+  hitBoxes.wingmanCommand=[x,y,w,h];
 }
 
 // View switching. The longitudinal eye offset varies monotonically along the nose axis.
@@ -1817,31 +2048,6 @@ function wordmark(x,y,scale) {
   });
 }
 
-function drawChoiceRow(center,y,previousKey,nextKey,w=134) {
-  const x=Math.round(center-w/2), h=21, edge=24;
-  rect(x,y,w,h,colors.ink);
-  rect(x+edge,y+1,w-2*edge,h-2,pattern(colors.plum,8));
-  border(x,y,w,h,colors.haze);
-  for(const side of [-1,1]) {
-    const buttonX=side<0?x:x+w-edge;
-    hitBoxes[side<0?previousKey:nextKey]=[buttonX,y,edge,h];
-    const iconX=buttonX+edge/2;
-    rect(buttonX+1,y+1,edge-2,h-2,colors.black);
-    polygon([[iconX+side*4,y+10],[iconX-side*3,y+5],[iconX-side*3,y+16]],colors.gold);
-  }
-}
-function drawAircraftSelector(center,y) {
-  drawChoiceRow(center,y,'previousAircraft','nextAircraft');
-  const previewX=center-29, previewY=y+12;
-  for(const {vertices,color} of airplanePreviews[selectedAircraft]) {
-    polygon(vertices.map(([x,,z])=>[previewX+x*2,previewY-z*1.95]),colors[color]);
-  }
-  type(selectedModel().name,center+10,y+14,11,colors.cream,'mono','center');
-}
-function drawMissionSelector(center,y) {
-  drawChoiceRow(center,y,'previousMission','nextMission');
-  type(missionInfo().name,center,y+14,11,colors.cream,'mono','center');
-}
 function canvasButton(key,label,x,y,w,h,primary=false,size=10) {
   hitBoxes[key]=[x,y,w,h];
   rect(x,y,w,h,primary?colors.gold:colors.black);
@@ -1850,7 +2056,7 @@ function canvasButton(key,label,x,y,w,h,primary=false,size=10) {
 }
 
 // Title screen. Even the scrim, lettering and hit target live in the pixel canvas.
-function titleScreen(time) {
+function titleScreen() {
   rect(0,0,width,5,pattern(colors.ink,7));
   rect(0,height-25,width,25,pattern(colors.ink,14));
   const center=width/2, middle=Math.round(height/2);
@@ -1860,7 +2066,7 @@ function titleScreen(time) {
   line(center-42,emblemY,center-22,emblemY,colors.haze);
   line(center+22,emblemY,center+42,emblemY,colors.haze);
   wordmark(center,middle-88,scale);
-  const subtitle=selectedMission===0?'秋日湖区 · 最后一缕光':'秋日湖区 · '+environments[selectedMission].area;
+  const subtitle='秋日湖区 · 最后一缕光';
   type(subtitle,center+1,middle-20,width<235?11:13,colors.ink,'display','center');
   type(subtitle,center,middle-21,width<235?11:13,colors.cream,'display','center');
   const buttonY=middle-5, buttonWidth=Math.min(240,width-44), left=Math.round(center-buttonWidth/2);
@@ -1874,61 +2080,29 @@ function titleScreen(time) {
     for(let i=0;i<Math.floor(progress*segments);i++) rect(left+4+i*segment,buttonY+6,segment-2,5,colors.gold);
     type(loading,center,buttonY+31,9,colors.cream,'mono','center');
   } else {
-    const y=buttonY-1;
+    canvasButton('controls','操作',width-66,18,48,20,false,10);
+    let y=buttonY-2;
+    const menuWidth=Math.min(width-32,186), menuX=Math.round(center-menuWidth/2);
     if(checkpoint) {
-      const span=Math.min(width-18,192), half=Math.floor((span-6)/2), x=Math.round(center-span/2);
-      canvasButton('resumeCheckpoint','继续上次',x,y,half,30,true,12);
-      canvasButton('launch','选机出击',x+half+6,y,half,30,false,12);
+      canvasButton('resumeCheckpoint','继续上次',menuX,y,menuWidth,24,true,12);
+      const lastMission=missions[checkpoint.level];
+      const summary=lastMission.name+' · '+aircraftModels[checkpoint.model].name+
+        (checkpoint.status.complete?' · 已完成':checkpoint.status.campaign?' · 第 '+(checkpoint.status.campaign.wave+1)+' 波':'');
+      type(summary,center,y+36,width<260?8:9,colors.cream,'mono','center');
+      y+=43;
+    }
+    if(checkpoint) {
+      const half=Math.floor((menuWidth-6)/2);
+      canvasButton('newMission','新任务',menuX,y,half,24,false,11);
+      canvasButton('openLan','局域网',menuX+half+6,y,half,24,false,11);
     } else {
-      const x=Math.round(center-62), w=124, h=30;
-      hitBoxes.launch=[x,y,w,h];
-      rect(x+3,y+4,w,h,colors.ink);
-      rect(x,y,w,h,colors.black);
-      rect(x+3,y+3,w-6,h-6,Math.floor(time*4)%2?colors.gold:colors.ochre);
-      border(x,y,w,h,colors.gold);
-      type('选机出击',center,y+21,14,colors.ink,'display','center');
+      canvasButton('newMission','新任务',menuX,y,menuWidth,25,true,12);
+      canvasButton('openLan','局域网',menuX,y+32,menuWidth,22,false,11);
+      y+=30;
     }
-    canvasButton('hangar','机库 · 选机',width-84,19,68,22,false,10);
-    if(missionInfo().chapter) canvasButton('campaignBrief','战役简报',16,19,64,22,false,10);
-  }
-  const small=width<300?9:10;
-  function hint(message,y,color,x=center,size=small) {
-    type(message,x+1,y+1,size,colors.ink,'mono','center');
-    type(message,x,y,size,color,'mono','center');
-  }
-  const stacked=width<301;
-  const shortStack=stacked&&height<345;
-  let hintY=middle+57;
-  if(ready) {
-    hint(checkpointFallback?'存档仅保留在此页面':tutorialSkipped?'教程已跳过':'按 Esc 跳过教程',middle+36,colors.gold);
-    const rowY=middle+43;
-    const aircraftX=stacked?center:center-72, missionX=stacked?center:center+72;
-    const missionY=stacked?rowY+(shortStack?25:45):rowY;
-    drawAircraftSelector(aircraftX,rowY);
-    drawMissionSelector(missionX,missionY);
-    if(!shortStack) {
-      const kit=selectedLoadout(), config=missionInfo();
-      const kitText='导弹 '+kit.tracers*12+' 枚 · 热诱 '+kit.decoys;
-      rect(aircraftX-67,rowY+22,134,26,pattern(colors.ink,13));
-      rect(missionX-67,missionY+22,134,26,pattern(colors.ink,13));
-      hint(kit.era,rowY+32,colors.gold,aircraftX,9);
-      hint(kitText,rowY+43,colors.cream,aircraftX,9);
-      const rules=config.role==='bomber'?'大型机 · 投送信标':config.waves?'混合编队 · '+config.waves.length+' 波':
-        config.lookout?(config.jammer?'预警 · 干扰 · 地面靶':'预警 · 地面靶'):config.drones?'无人机 · 巡航':'无任务目标';
-      const environment=environments[selectedMission];
-      hint(environment.clock+' · '+environment.condition,missionY+32,colors.gold,missionX,8);
-      hint(rules,missionY+43,colors.cream,missionX,9);
+    if(y+44<height-24) {
+      type(checkpointFallback?'存档仅保留在此页面':tutorialSkipped?'教程已跳过':'按 Esc 跳过教程',center,y+43,9,colors.gold,'mono','center');
     }
-    hintY=missionY+(shortStack?34:60);
-  }
-  const hintSpacing=ready?11:14;
-  hint(touch?'触摸两排箭头可选机和选关':'左右选机 · 上下选关 · C 切换视角',hintY,colors.cream);
-  if(hintY+hintSpacing<height-26) {
-    hint(touch?'左侧摇杆操纵 · 右侧滑条调油门':'W/S 俯仰 · A/D 横滚 · Q/E 偏航',hintY+hintSpacing,colors.cream);
-  }
-  if(hintY+hintSpacing*2<height-26) {
-    hint(ready?(touch?'出击后可触控发射与切换目标':'J 机炮 · K 导弹 · L 热诱弹 · T 切锁'):'鼠标拖拽也可操作',
-      hintY+hintSpacing*2,colors.cream,center,width<270?9:small);
   }
   corners(11,11,width-23,height-23,12,colors.haze);
   const footer='全部地形、云层与声音由浏览器实时生成，不加载任何外部素材。';
@@ -1938,29 +2112,71 @@ function titleScreen(time) {
   } else type(footer,center,height-13,8,colors.haze,'mono','center');
 }
 
-let briefing=false;
-function toggleBriefing() {
-  if(ready&&!flying&&missionInfo().chapter) briefing=!briefing;
+let entryScreen='title', briefingReturn='missions', hangarReturn='briefing';
+let soloSelection=null;
+function controlsScreen() {
+  const w=Math.min(240,width-24), x=Math.round((width-w)/2), y=Math.round((height-190)/2);
+  rect(x,y,w,190,colors.ink);
+  corners(x,y,w-1,189,10,colors.gold);
+  type('飞行操作',x+12,y+24,14,colors.cream,'display');
+  canvasButton('backToTitle','返回',x+w-60,y+9,48,21,false,10);
+  const rows=touch?[
+    '触摸摇杆控制俯仰与横滚','右侧滑条调油门','触摸装备按钮或雷达目标','轻触僚机状态可切换指令','轻触视角按钮可切换座舱'
+  ]:[
+    'W/S 俯仰 · A/D 横滚 · Q/E 偏航','Shift/Ctrl 调油门 · C 切换视角',
+    'J 机炮 · K 导弹 · L 热诱弹','T 切锁 · U 僚机指令 · B 投送信标',
+    'P 暂停菜单 · R 重开本关','也可拖拽鼠标操纵飞机'
+  ];
+  rows.forEach((row,index)=>type(row,x+12,y+52+index*20,width<235?8:10,colors.cream));
+  type(tutorialSkipped?'教程已跳过':'标题页按 Esc 可跳过教程',x+12,y+179,8,colors.gold);
+}
+function missionSelectionScreen() {
+  const narrow=width<350, w=Math.min(width-22,405), x=Math.round((width-w)/2);
+  const h=Math.min(height-22,296), y=Math.round((height-h)/2), bottom=y+h;
+  const row=Math.min(24,Math.floor((h-98)/missions.length)), listWidth=narrow?w-24:Math.floor(w*.45);
+  rect(x,y,w,h,colors.ink);
+  corners(x,y,w-1,h-1,10,colors.gold);
+  type('新任务',x+13,y+23,15,colors.cream,'display');
+  canvasButton('backToTitle','返回',x+w-57,y+9,45,19,false,10);
+  type('自由飞行与演习',x+13,y+42,9,colors.gold);
+  hitBoxes.missionChoices=missions.map((config,index)=>{
+    if(index===4) type('暮湾航线',x+13,y+57+index*row,9,colors.gold);
+    const slot=[x+12,y+48+index*row+(index>=4?16:0),listWidth,row-2];
+    const label=config.chapter?config.chapter+'  '+config.name:config.name;
+    canvasButton('missionChoice'+index,label,...slot,index===selectedMission,10);
+    return {slot,index};
+  });
+  if(!narrow) {
+    const config=missionInfo(), environment=environments[selectedMission], infoX=x+29+listWidth;
+    line(infoX-10,y+50,infoX-10,bottom-39,colors.haze);
+    type(config.name,infoX,y+76,14,colors.cream,'display');
+    type(environment.area,infoX,y+101,11,colors.gold);
+    type(environment.clock+' · '+environment.condition,infoX,y+120,9,colors.cream);
+    type(config.role==='bomber'?'大型机 · 信标投送':config.difficulty||'自由巡航',infoX,y+146,10,colors.cream);
+  }
+  canvasButton('missionBrief','查看简报',x+w-112,bottom-29,100,20,true,11);
 }
 function campaignBriefing() {
   const config=missionInfo(), cx=width/2;
-  const w=Math.min(width-20,343), bodyWidth=Math.floor((w-22)/11), body=Array.from(config.briefing);
+  const description=config.briefing||(config.drones?'在指定空域完成拦截演习，清除雷达上的演习目标。':'沿湖岸自由飞行，探索地形和座舱视角。');
+  const w=Math.min(width-20,343), bodyWidth=Math.floor((w-22)/11), body=Array.from(description);
   const h=Math.min(height-26,Math.max(198,134+Math.ceil(body.length/bodyWidth)*14));
   const x=Math.round(cx-w/2), y=Math.round(height/2-h/2);
   rect(0,0,width,height,pattern(colors.ink,7));
   rect(x,y,w,h,colors.ink);
   corners(x,y,w-1,h-1,10,colors.gold);
-  type('暮湾航线 · 第 '+config.chapter+' 章',cx,y+20,10,colors.gold,'mono','center');
+  const section=config.chapter?'暮湾航线 · 第 '+config.chapter+' 章':config.drones?'飞行演习':'自由巡航';
+  type(section,cx,y+20,10,colors.gold,'mono','center');
   type(config.name,cx,y+42,17,colors.cream,'display','center');
   for(let i=0;i<body.length;i+=bodyWidth) {
     type(body.slice(i,i+bodyWidth).join(''),cx,y+61+Math.floor(i/bodyWidth)*15,11,colors.cream,'mono','center');
   }
-  const labels=config.role==='bomber'?['投送引航信标',touch?'接近后点击投送':'接近后按 B 投送']:
-    ['清除多波混合编队','变向可累积规避进度'];
+  const objective=config.role==='bomber'?'大型机 · 投送引航信标':config.waves?'混合编队 · '+config.waves.length+' 波':
+    config.drones?'难度 · '+config.difficulty:'本次航段无指定目标';
   const environment=environments[selectedMission];
   type(environment.clock+' · '+environment.condition,cx,y+h-67,9,colors.gold,'mono','center');
-  type(labels[0]+' · '+config.waves.length+' 波',cx,y+h-53,9,colors.gold,'mono','center');
-  type(labels[1],cx,y+h-39,9,colors.cream,'mono','center');
+  type(environment.area,cx,y+h-53,9,colors.cream,'mono','center');
+  type(objective,cx,y+h-39,9,colors.gold,'mono','center');
   const bw=Math.floor((w-34)/2);
   canvasButton('closeBrief','返回',x+12,y+h-30,bw,20,false,11);
   canvasButton('executeBrief','进入机库',x+w-12-bw,y+h-30,bw,20,true,11);
@@ -1970,7 +2186,7 @@ const hangarViews=[
   {label:'斜视'}, {label:'顶视',axis:[0,1,0],up:[0,0,1]},
   {label:'侧视',axis:[1,0,0],up:[0,1,0]}, {label:'正视',axis:[0,0,1],up:[0,1,0]}
 ];
-let hangar=false, hangarFromBrief=false, hangarView=0, hangarYaw=.82, hangarPitch=.41, hangarDrag=null;
+let hangarView=0, hangarYaw=.82, hangarPitch=.41, hangarDrag=null;
 function hangarScreen(time) {
   gl.clearColor(.125,.094,.176,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
@@ -2000,7 +2216,12 @@ function hangarScreen(time) {
   const returnWidth=narrow?37:52, confirmWidth=narrow?62:85;
   const returnX=width-returnWidth-12;
   canvasButton('closeHangar','返回',returnX,15,returnWidth,21,false,11);
-  canvasButton('confirmSortie','确认出击',returnX-confirmWidth-6,15,confirmWidth,21,true,11);
+  const room = hangarReturn==='lan';
+  canvasButton('confirmSortie',room?'确认机型':'确认出击',returnX-confirmWidth-6,15,confirmWidth,21,true,11);
+  if(!room) {
+    const x=narrow?12:returnX-confirmWidth-105, y=narrow?32:15;
+    canvasButton('wingmanOption',wingmanEnabled?'僚机：开':'僚机：关',x,y,narrow?58:88,narrow?13:21,wingmanEnabled,narrow?8:10);
+  }
   const available=compatibleAircraft();
   const columns=narrow?2:1, rowCount=Math.ceil(available.length/columns);
   const rowHeight=narrow?Math.min(19,Math.floor((height-listTop-92)/rowCount)):
@@ -2257,7 +2478,7 @@ function environmentHud() {
 const contactColors={
   drone:colors.red,interceptor:colors.ochre,guardian:colors.haze,
   ground:colors.ochre,convoy:colors.peach,relay:colors.gold,beacon:colors.cream,
-  lookout:colors.gold,jammer:colors.peach
+  lookout:colors.gold,jammer:colors.peach,rival:colors.red
 };
 function insideView(point,margin=0) {
   return point && point[0]>margin && point[0]<width-margin && point[1]>margin && point[1]<height-margin;
@@ -2307,10 +2528,10 @@ function drawBurst(effect,cam) {
     }
   }
 }
-function drawMissionWorld(cam) {
+function drawMissionWorld(cam,effects=mission?.effects) {
   if(!mission) return;
   for(const target of mission.targets) {
-    if(!target.health) continue;
+    if(!target.health || target.kind==='rival') continue;
     const point=project(target.position,cam);
     if(!insideView(point) || !clearSight(cam.eye,target.position)) continue;
     const [x,y]=point;
@@ -2363,7 +2584,7 @@ function drawMissionWorld(cam) {
       rect(point[0]-1,point[1]-1,i===0?3:2,i===0?3:2,i===0?colors.hot:colors.red);
     }
   }
-  for(const effect of mission.effects) {
+  for(const effect of effects) {
     if(effect.kind==='burst') {
       drawBurst(effect,cam);
       continue;
@@ -2376,7 +2597,7 @@ function drawMissionWorld(cam) {
         const [x,y]=tip;
         const [sx,sy]=insideView(end)?end:[width*.59,height*.69];
         line(sx-1,sy+1,x-1,y+1,colors.copper);
-        line(sx,sy,x,y,colors.gold);
+        line(sx,sy,x,y,effect.friendly?colors.mist:colors.gold);
         line(sx+1,sy,x+1,y,colors.cream);
         rect(x-1,y-1,3,3,colors.hot);
       }
@@ -2524,12 +2745,13 @@ function compassRadar(s) {
     const color=contactColors[target.kind];
     if(target===mission.locked) border(mx-3,my-3,7,7,hud);
     if(!isAirContact(target)) border(mx-1,my-1,3,3,color);
-    else if(['drone','interceptor','guardian'].includes(target.kind)) polygon([[mx,my-2],[mx+2,my],[mx,my+2],[mx-2,my]],color);
+    else if(['drone','interceptor','guardian','rival'].includes(target.kind)) polygon([[mx,my-2],[mx+2,my],[mx,my+2],[mx-2,my]],color);
     else {
       line(mx-2,my,mx+2,my,color);
       line(mx,my-2,mx,my+2,color);
     }
   }
+  wingmanRadarDot(s,{x,y,radius,scope,occupied});
   polygon([[x,y-4],[x+3,y+2],[x-3,y+2]],colors.cream);
   if(alert) {
     const [dx,dy]=unit(alert);
@@ -2553,7 +2775,7 @@ function selectRadarContact(p) {
     if(delta<distance) {nearest=point.target;distance=delta;}
   }
   if(!nearest || nearest.health<=0) return false;
-  chooseTarget(nearest,true);
+  if(!lanInputAction('select',mission.targets.indexOf(nearest))) chooseTarget(nearest,true);
   return true;
 }
 function aircraftStatusHud() {
@@ -2680,7 +2902,7 @@ const lessons=[
 const milestones=new Set();
 let tutorialSkipped=false, lesson=0, freeTime=0, steady=0, bankTime=0, energyTime=0;
 let highPoint=-Infinity, lowPoint=Infinity, dipped=false;
-function remember(name) {if(!tutorialSkipped)milestones.add(name);}
+function remember(name) {if(!tutorialSkipped&&!lanMatch)milestones.add(name);}
 function updateTutorial(dt) {
   if(tutorialSkipped || lesson>=lessons.length) return;
   const s=aircraft, altitude=s.position[1];
@@ -2768,7 +2990,7 @@ let audio=null;
 const cueTones={pulse:[164,.066,.055],tracer:[292,.19,.073],decoy:[508,.15,.053],
   lock:[740,.10,.042],incoming:[930,.23,.058],impact:[113,.36,.088]};
 function playCue(name) {
-  if(!audio || paused || document.hidden) return;
+  if(!audio || paused || document.hidden || lanMatch?.remoteStep) return;
   const [frequency,duration,volume]=cueTones[name], {context,master}=audio;
   const start=context.currentTime, node=context.createOscillator(), gain=context.createGain();
   node.type=name==='pulse'?'triangle':'sine';
@@ -2859,7 +3081,7 @@ function readCheckpoint() {
   return null;
 }
 function saveCheckpoint() {
-  if(!flying || !mission) return;
+  if(!flying || !mission || lanMatch) return;
   const {tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,
     missileReserve,missileReload,tracerTime}=mission;
   const snapshot={
@@ -2869,7 +3091,8 @@ function saveCheckpoint() {
       ({...effect,targetIndex:mission.targets.indexOf(target)})),
     status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,
       missileReserve,missileReload,tracerTime,campaign:mission.campaign},
-    tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]}
+    tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]},
+    wingman:wingmanSnapshot(), wingmanEnabled
   };
   const encoded=JSON.stringify(snapshot);
   checkpoint=JSON.parse(encoded);
@@ -2879,7 +3102,7 @@ function saveCheckpoint() {
   } catch {checkpointFallback=true;}
 }
 function resumeCheckpoint() {
-  if(!ready || flying || !checkpoint) return;
+  if(!ready || flying || entryScreen!=='title' || !checkpoint) return;
   const snapshot=JSON.parse(JSON.stringify(checkpoint));
   selectedAircraft=snapshot.model;selectedMission=snapshot.level;
   activeEnvironment=environments[snapshot.environment]?snapshot.environment:0;
@@ -2897,6 +3120,8 @@ function resumeCheckpoint() {
   mission.charge=snapshot.charge;
   mission.effects=snapshot.effects.map(effect=>({...effect,target:mission.targets[effect.targetIndex]}))
     .filter(effect=>effect.target);
+  wingmanEnabled=snapshot.wingmanEnabled!==false;
+  if(snapshot.wingman===undefined) resetWingman(); else restoreWingman(snapshot.wingman);
   if(!tutorialSkipped) {
     tutorialSkipped=snapshot.tutorial.skipped;
     lesson=snapshot.tutorial.lesson;freeTime=snapshot.tutorial.freeTime;
@@ -2906,96 +3131,999 @@ function resumeCheckpoint() {
 }
 addEventListener('pagehide',saveCheckpoint);
 
+// LAN transport and room. The browser exchanges gathered candidates through the two copyable codes.
+const lanProtocol=1;
+const lanCodePrefix='PATROL1.';
+const lanStages={pve:[4,1],pvp:[1]};
+const lan={
+  role:null, phase:'idle', connected:false, mode:'pve', stage:4, localAircraft:0, remoteAircraft:0,
+  localReady:false, remoteReady:false, revision:0, round:0, status:'',
+  session:'', invite:'', response:'', peer:null, control:null, snapshots:null, dialog:null,
+  helloSent:false, helloReceived:false, timer:0, disconnectTimer:0, epoch:0,
+  onStart:null, onControl:null, onSnapshot:null, onDisconnect:null, onExit:null, onRematch:null,
+  send:(message,fast=false)=>fast?lanSendSnapshot(message):lanSendControl(message)
+};
+const lanModelValid=index=>Number.isInteger(index)&&Boolean(aircraftModels[index])&&!aircraftModels[index].role;
+const lanDefaultAircraft=index=>lanModelValid(index)?index:aircraftModels.findIndex(model=>!model.role);
+const lanStageValid=(mode,stage)=>Object.hasOwn(lanStages,mode)&&lanStages[mode].includes(stage);
+function releaseLanPeer() {
+  lan.epoch++;
+  clearTimeout(lan.timer);
+  clearTimeout(lan.disconnectTimer);
+  const {peer,control,snapshots}=lan;
+  Object.assign(lan,{peer:null,control:null,snapshots:null,connected:false,helloSent:false,helloReceived:false});
+  control?.close();
+  snapshots?.close();
+  peer?.close();
+}
+function closeLanRoom() {
+  if(lan.connected) sendLanPacket(lan.control,{kind:'leave'});
+  releaseLanPeer();
+  const dialog=lan.dialog;
+  lan.dialog=null;
+  dialog?.close();
+  Object.assign(lan,{role:null,phase:'idle',mode:'pve',stage:lanStages.pve[0],localReady:false,remoteReady:false,
+    revision:0,round:0,status:'',session:'',invite:'',response:''});
+}
+function openLanRoom(aircraftIndex=0) {
+  closeLanRoom();
+  lan.localAircraft=lanDefaultAircraft(aircraftIndex);
+  lan.remoteAircraft=lanDefaultAircraft(0);
+  if(typeof RTCPeerConnection!=='function') lan.status='此浏览器未提供局域网连接功能';
+}
+function failLanPeer(status) {
+  const wasPlaying=lan.phase==='playing', wasConnected=lan.connected;
+  releaseLanPeer();
+  Object.assign(lan,{phase:'error',localReady:false,remoteReady:false,status});
+  lan.dialog?.close();
+  if(wasPlaying||wasConnected) lan.onDisconnect?.({wasPlaying,reason:status});
+}
+function encodeLanCode(kind,description) {
+  return lanCodePrefix+btoa(JSON.stringify({kind,session:lan.session,protocol:lanProtocol,sdp:description.sdp}));
+}
+function decodeLanCode(value,kind) {
+  const prefix=value.trim().replace(/\s/g,'');
+  if(/^PATROL\d+\./.test(prefix)&&!prefix.startsWith(lanCodePrefix)) throw new Error('游戏版本不一致');
+  if(!prefix.startsWith(lanCodePrefix)||prefix.length>40000) throw new Error('连接码格式错误，请完整复制');
+  let data;
+  try {data=JSON.parse(atob(prefix.slice(lanCodePrefix.length)));}
+  catch {throw new Error('连接码格式错误，请完整复制');}
+  if(!data||data.protocol!==lanProtocol) throw new Error('游戏版本不一致');
+  if(data.kind!==kind) throw new Error(kind==='offer'?'请粘贴房主的邀请':'请粘贴客机的回执');
+  if(typeof data.session!=='string'||!/^[0-9a-f]{32}$/.test(data.session)||
+    typeof data.sdp!=='string'||!data.sdp.startsWith('v=0')||data.sdp.length>28000) throw new Error('连接码格式错误');
+  if(!/(?:^|\r?\n)a=candidate:[^\r\n]* typ host(?:\s|$)/.test(data.sdp)) throw new Error('连接码缺少本地网络地址');
+  return data;
+}
+function gatherLanDescription(peer,epoch) {
+  return new Promise((resolve,reject)=>{
+    let timeout;
+    const done=()=>{
+      if(peer.iceGatheringState!=='complete'&&peer.signalingState!=='closed') return;
+      cleanup();
+      if(epoch!==lan.epoch||!peer.localDescription) {reject(new Error('连接已取消'));return;}
+      resolve(peer.localDescription);
+    };
+    const cleanup=()=>{
+      clearTimeout(timeout);
+      peer.removeEventListener('icegatheringstatechange',done);
+      peer.removeEventListener('signalingstatechange',done);
+    };
+    timeout=setTimeout(()=>{cleanup();reject(new Error('收集局域网地址超时'));},12000);
+    peer.addEventListener('icegatheringstatechange',done);
+    peer.addEventListener('signalingstatechange',done);
+    done();
+  });
+}
+function sendLanPacket(channel,packet) {
+  if(channel?.readyState!=='open'||channel.bufferedAmount>262144) return false;
+  try {
+    const encoded=JSON.stringify(packet);
+    if(encoded.length>60000) return false;
+    channel.send(encoded);
+    return true;
+  } catch {return false;}
+}
+function lanSendControl(message) {
+  return lan.phase==='playing'&&sendLanPacket(lan.control,{kind:'game',round:lan.round,data:message});
+}
+function lanSendSnapshot(message) {
+  return lan.phase==='playing'&&sendLanPacket(lan.snapshots,{kind:'game',round:lan.round,data:message});
+}
+function setLanConnectionTimer(epoch,ms) {
+  clearTimeout(lan.timer);
+  lan.timer=setTimeout(()=>{
+    if(epoch===lan.epoch&&!lan.connected) failLanPeer('连接超时，请确认两台设备在同一局域网');
+  },ms);
+}
+function finishLanHandshake() {
+  if(lan.control?.readyState!=='open'||lan.snapshots?.readyState!=='open') return;
+  if(!lan.helloSent) {
+    lan.helloSent=sendLanPacket(lan.control,{kind:'hello',protocol:lanProtocol,session:lan.session,role:lan.role});
+  }
+  if(lan.connected||!lan.helloSent||!lan.helloReceived) return;
+  clearTimeout(lan.timer);
+  lan.connected=true;
+  lan.phase='room';
+  lan.status='';
+  lan.dialog?.close();
+  if(lan.role==='host') sendLanSetup(); else sendLanChoice();
+}
+function attachLanChannel(channel,epoch) {
+  const fast=channel.label==='patrol-snapshot';
+  const key=fast?'snapshots':'control';
+  if((!fast&&channel.label!=='patrol-control')||lan[key]) {channel.close();return;}
+  lan[key]=channel;
+  channel.addEventListener('open',()=>{if(epoch===lan.epoch) finishLanHandshake();});
+  channel.addEventListener('close',()=>{
+    if(epoch===lan.epoch) failLanPeer(lan.connected?'对方已离开，连接结束':'连接未建立，请重新交换连接码');
+  });
+  channel.addEventListener('message',event=>{
+    if(epoch!==lan.epoch||typeof event.data!=='string'||event.data.length>60000) return;
+    let packet;
+    try {packet=JSON.parse(event.data);}
+    catch {return;}
+    if(!packet||typeof packet!=='object') return;
+    if(fast) {
+      if(packet.kind==='game'&&lan.phase==='playing'&&packet.round===lan.round&&packet.data&&typeof packet.data==='object')
+        lan.onSnapshot?.(packet.data);
+    } else applyLanPacket(packet);
+  });
+  finishLanHandshake();
+}
+function createLanPeer(role,session) {
+  releaseLanPeer();
+  if(typeof RTCPeerConnection!=='function') throw new Error('此浏览器未提供局域网连接功能');
+  const peer=new RTCPeerConnection({iceServers:[]}), epoch=lan.epoch;
+  Object.assign(lan,{peer,role,session,localReady:false,remoteReady:false,revision:0,round:0,status:'',invite:'',response:''});
+  peer.addEventListener('connectionstatechange',()=>{
+    if(epoch!==lan.epoch) return;
+    clearTimeout(lan.disconnectTimer);
+    if(peer.connectionState==='failed') failLanPeer('局域网直连失败，请重新创建或加入');
+    else if(peer.connectionState==='disconnected') lan.disconnectTimer=setTimeout(()=>{
+      if(epoch===lan.epoch&&peer.connectionState==='disconnected') failLanPeer('已断开局域网连接');
+    },4000);
+  });
+  if(role==='host') {
+    attachLanChannel(peer.createDataChannel('patrol-control'),epoch);
+    attachLanChannel(peer.createDataChannel('patrol-snapshot',{ordered:false,maxRetransmits:0}),epoch);
+  } else peer.addEventListener('datachannel',event=>{
+    if(epoch===lan.epoch) attachLanChannel(event.channel,epoch);
+    else event.channel.close();
+  });
+  return {peer,epoch};
+}
+async function createLanInvitation() {
+  let epoch;
+  try {
+    const session=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+    const connection=createLanPeer('host',session);
+    const {peer}=connection;
+    epoch=connection.epoch;
+    lan.phase='gathering';
+    await peer.setLocalDescription(await peer.createOffer());
+    const description=await gatherLanDescription(peer,epoch);
+    if(epoch!==lan.epoch) return;
+    const invite=encodeLanCode('offer',description);
+    decodeLanCode(invite,'offer');
+    Object.assign(lan,{invite,phase:'invite'});
+  } catch(error) {
+    if(epoch===undefined||epoch===lan.epoch)
+      failLanPeer(error instanceof Error&&error.message.includes('局域网')?error.message:'无法生成邀请，请检查浏览器网络权限');
+  }
+}
+async function acceptLanInvitation(value) {
+  const offer=decodeLanCode(value,'offer');
+  if(lan.connected) throw new Error('当前已在房间内');
+  const {peer,epoch}=createLanPeer('guest',offer.session);
+  lan.phase='gathering';
+  try {
+    await peer.setRemoteDescription({type:'offer',sdp:offer.sdp});
+    await peer.setLocalDescription(await peer.createAnswer());
+    const description=await gatherLanDescription(peer,epoch);
+    if(epoch!==lan.epoch) return;
+    const response=encodeLanCode('answer',description);
+    decodeLanCode(response,'answer');
+    Object.assign(lan,{response,phase:'connecting'});
+    setLanConnectionTimer(epoch,90000);
+  } catch {
+    if(epoch===lan.epoch) failLanPeer('无法生成回执，请检查邀请和浏览器网络权限');
+  }
+}
+async function acceptLanResponse(value) {
+  const response=decodeLanCode(value,'answer');
+  if(lan.role!=='host'||lan.phase!=='invite'||response.session!==lan.session) throw new Error('此回执与当前邀请不匹配');
+  const {peer,epoch}=lan;
+  try {await peer.setRemoteDescription({type:'answer',sdp:response.sdp});}
+  catch {throw new Error('无法读取回执，请完整复制后重试');}
+  if(epoch===lan.epoch&&!lan.connected) {
+    lan.phase='connecting';
+    setLanConnectionTimer(epoch,18000);
+  }
+}
+function sendLanSetup() {
+  sendLanPacket(lan.control,{kind:'setup',revision:lan.revision,mode:lan.mode,stage:lan.stage,
+    aircraft:lan.localAircraft,ready:lan.localReady});
+}
+function sendLanChoice() {
+  sendLanPacket(lan.control,{kind:'choice',revision:lan.revision,aircraft:lan.localAircraft,ready:lan.localReady});
+}
+function applyLanPacket(packet) {
+  if(packet.kind==='hello') {
+    if(packet.protocol!==lanProtocol||packet.session!==lan.session||packet.role===(lan.role)||
+      !['host','guest'].includes(packet.role)) {failLanPeer('连接码与当前房间或游戏版本不匹配');return;}
+    lan.helloReceived=true;
+    finishLanHandshake();
+    return;
+  }
+  // The reliable channel can deliver setup just before the local snapshot channel opens.
+  if(!lan.helloReceived) return;
+  if(packet.kind==='leave') {failLanPeer('对方已离开，连接结束');return;}
+  if(packet.kind==='setup'&&lan.role==='guest'&&lan.phase!=='playing'&&
+    Number.isSafeInteger(packet.revision)&&packet.revision>=lan.revision&&lanStageValid(packet.mode,packet.stage)&&lanModelValid(packet.aircraft)) {
+    const changed=packet.revision!==lan.revision;
+    Object.assign(lan,{revision:packet.revision,mode:packet.mode,stage:packet.stage,
+      remoteAircraft:packet.aircraft,remoteReady:packet.ready===true});
+    if(changed) {lan.localReady=false;sendLanChoice();}
+  }
+  if(packet.kind==='choice'&&lan.role==='host'&&lan.phase!=='playing'&&
+    packet.revision===lan.revision&&lanModelValid(packet.aircraft)) {
+    lan.remoteAircraft=packet.aircraft;
+    lan.remoteReady=packet.ready===true;
+  }
+  if(!lan.connected) return;
+  if(packet.kind==='start'&&lan.role==='guest'&&lan.phase==='room'&&
+    Number.isSafeInteger(packet.round)&&packet.round>lan.round&&packet.revision===lan.revision&&
+    lanModelValid(packet.hostAircraft)&&lanModelValid(packet.guestAircraft)) {
+    // The host's start packet resolves any simultaneous cancellation or aircraft change.
+    lan.localAircraft=packet.guestAircraft;
+    lan.remoteAircraft=packet.hostAircraft;
+    beginLanRoomMatch(packet.round);
+  }
+  if(packet.kind==='game'&&lan.phase==='playing'&&packet.round===lan.round&&packet.data&&typeof packet.data==='object')
+    lan.onControl?.(packet.data);
+  if(packet.kind==='return'&&lan.phase==='playing'&&packet.round===lan.round) {
+    if(lan.role==='host') sendLanPacket(lan.control,{kind:'return',round:lan.round});
+    resetLanMatchReady();
+  }
+}
+function setLanRoomRules(mode,stage) {
+  if(lan.role!=='host'||lan.phase!=='room'||!lanStageValid(mode,stage)||(lan.mode===mode&&lan.stage===stage)) return;
+  Object.assign(lan,{mode,stage,revision:lan.revision+1,localReady:false,remoteReady:false});
+  sendLanSetup();
+}
+const setLanMode=mode=>{if(Object.hasOwn(lanStages,mode)) setLanRoomRules(mode,lanStages[mode][0]);};
+function lanConfirmAircraft(index) {
+  if(!lan.connected||lan.phase!=='room'||!lanModelValid(index)||lan.localAircraft===index) return;
+  Object.assign(lan,{localAircraft:index,localReady:false});
+  if(lan.role==='host') sendLanSetup(); else sendLanChoice();
+}
+function toggleLanReady() {
+  if(!lan.connected||lan.phase!=='room') return;
+  lan.localReady=!lan.localReady;
+  if(lan.role==='host') sendLanSetup(); else sendLanChoice();
+}
+function beginLanRoomMatch(round) {
+  const {role,mode,stage,localAircraft,remoteAircraft}=lan;
+  const isHost=role==='host';
+  Object.assign(lan,{phase:'playing',round});
+  lan.onStart?.({role,mode,stage,localAircraft,remoteAircraft,mission:stage,
+    hostModel:isHost?localAircraft:remoteAircraft,guestModel:isHost?remoteAircraft:localAircraft});
+}
+function startLanRoomMatch() {
+  if(!lan.connected||lan.role!=='host'||lan.phase!=='room'||!lan.localReady||!lan.remoteReady) return;
+  const round=lan.round+1;
+  if(sendLanPacket(lan.control,{kind:'start',round,revision:lan.revision,
+    hostAircraft:lan.localAircraft,guestAircraft:lan.remoteAircraft})) beginLanRoomMatch(round);
+}
+function resetLanMatchReady() {
+  Object.assign(lan,{phase:'room',localReady:false,remoteReady:false});
+  lan.onRematch?.();
+}
+function returnLanToRoom() {
+  if(lan.phase!=='playing'||!lan.connected) return;
+  if(sendLanPacket(lan.control,{kind:'return',round:lan.round})&&lan.role==='host') resetLanMatchReady();
+}
+
+// Native text entry keeps connection codes usable on touch devices and local files.
+function showLanCode(kind) {
+  const output=kind==='invite'||kind==='response';
+  const title={invite:'邀请文本',response:'回执文本',join:'粘贴房主邀请',confirm:'粘贴客机回执'}[kind];
+  lan.dialog?.close();
+  const dialog=document.createElement('dialog'), heading=document.createElement('label'),
+    textArea=document.createElement('textarea'), actions=document.createElement('div'),
+    message=document.createElement('div'), primary=document.createElement('button'), cancel=document.createElement('button');
+  lan.dialog=dialog;
+  Object.assign(dialog.style,{width:'min(420px, 92vw)',border:'2px solid '+colors.haze,background:colors.ink,
+    color:colors.cream,padding:'16px',font:'14px '+chineseFont});
+  heading.htmlFor='patrol-lan-code';
+  heading.textContent=title;
+  textArea.id='patrol-lan-code';
+  textArea.spellcheck=false;
+  textArea.autocapitalize='off';
+  textArea.readOnly=output;
+  textArea.value=output?lan[kind]:'';
+  Object.assign(textArea.style,{display:'block',width:'100%',height:'100px',margin:'9px 0',
+    background:colors.black,color:colors.cream,border:'1px solid '+colors.haze,padding:'8px',resize:'vertical'});
+  Object.assign(actions.style,{display:'flex',gap:'8px',justifyContent:'flex-end'});
+  for(const button of [cancel,primary]) Object.assign(button.style,{font:'inherit',padding:'6px 14px',
+    color:colors.ink,background:colors.gold,border:'1px solid '+colors.haze});
+  message.setAttribute('role','status');
+  Object.assign(message.style,{minHeight:'24px',color:colors.gold});
+  primary.textContent=output?'复制文本':'确认';
+  cancel.textContent='关闭';
+  actions.append(cancel,primary);
+  dialog.append(heading,textArea,message,actions);
+  dialog.addEventListener('keydown',event=>event.stopPropagation());
+  dialog.addEventListener('close',()=>{
+    if(lan.dialog===dialog) lan.dialog=null;
+    dialog.remove();
+  });
+  cancel.addEventListener('click',()=>dialog.close());
+  primary.addEventListener('click',async()=>{
+    if(output) {
+      textArea.select();
+      textArea.setSelectionRange(0,textArea.value.length);
+      try {
+        if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(textArea.value);
+        else if(!document.execCommand('copy')) throw new Error();
+        message.textContent='已复制';
+      } catch {message.textContent='文本已选中，请手动复制';}
+      return;
+    }
+    primary.disabled=true;
+    message.textContent='正在读取…';
+    try {
+      if(kind==='join') await acceptLanInvitation(textArea.value);
+      else await acceptLanResponse(textArea.value);
+      if(!dialog.open) return;
+      dialog.close();
+      if(kind==='join'&&lan.phase==='connecting'&&lan.response) showLanCode('response');
+    } catch(error) {message.textContent=error.message;}
+    finally {primary.disabled=false;}
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+  textArea.focus();
+  if(output) textArea.select();
+}
+function drawLanRoom() {
+  const center=width/2, panelWidth=Math.min(316,width-24), x=Math.round(center-panelWidth/2);
+  const top=Math.max(12,Math.round(height/2-139)), buttonX=x+13, innerWidth=panelWidth-26;
+  const half=Math.floor((innerWidth-6)/2), second=buttonX+half+6, thin=panelWidth<246;
+  const status=lan.status||{
+    idle:'两台设备使用同一版本并连接同一局域网',gathering:'正在收集局域网地址…',
+    invite:'将邀请发给客机，再填入客机回执',connecting:lan.role==='guest'?'将你的回执发回房主':'正在建立直连…'
+  }[lan.phase]||'';
+  rect(x,top,panelWidth,242,colors.ink);
+  rect(x+1,top+1,panelWidth-2,240,pattern(colors.plum,7));
+  corners(x,top,panelWidth-1,241,9,colors.haze);
+  type('局域网联机',center,top+25,16,colors.cream,'display','center');
+  type('双人飞行',center,top+42,9,colors.gold,'mono','center');
+  if(lan.phase==='room') {
+    if(lan.role==='host') {
+      canvasButton('lanPve','合作任务',buttonX,top+55,half,23,lan.mode==='pve',11);
+      canvasButton('lanPvp','一对一对抗',second,top+55,half,23,lan.mode==='pvp',11);
+    } else type(lan.mode==='pve'?'合作任务':'一对一对抗',center,top+70,11,colors.cream,'mono','center');
+    if(lan.role==='host'&&lanStages[lan.mode].length>1) {
+      canvasButton('lanMap',missions[lan.stage].name+'  ·  换场地',buttonX,top+84,innerWidth,22,false,10);
+    } else type(missions[lan.stage].name,center,top+101,11,colors.gold,'mono','center');
+    type('本机  '+aircraftModels[lan.localAircraft].name+' · '+(lan.localReady?'已准备':'未准备'),
+      buttonX,top+123,thin?9:10,colors.cream);
+    type('对方  '+aircraftModels[lan.remoteAircraft].name+' · '+(lan.remoteReady?'已准备':'未准备'),
+      buttonX,top+140,thin?9:10,colors.cream);
+    canvasButton('lanAircraft','机库选机',buttonX,top+151,half,23,false,11);
+    canvasButton('lanReady',lan.localReady?'取消准备':'准备',second,top+151,half,23,!lan.localReady,11);
+    if(lan.role==='host'&&lan.localReady&&lan.remoteReady)
+      canvasButton('lanStart','确认出击',buttonX,top+181,innerWidth,23,true,11);
+    else type(lan.role==='host'?'双方准备后即可出击':'等待房主出击',center,top+197,10,colors.gold,'mono','center');
+  } else {
+    const statusSize=thin?8:10, maxChars=Math.floor(innerWidth/statusSize), statusChars=[...status];
+    type(statusChars.slice(0,maxChars).join(''),center,top+65,statusSize,colors.cream,'mono','center');
+    if(statusChars.length>maxChars)
+      type(statusChars.slice(maxChars).join(''),center,top+77,statusSize,colors.cream,'mono','center');
+    if(lan.phase==='idle'||lan.phase==='error') {
+      canvasButton('lanCreate','创建房间',buttonX,top+88,half,27,true,11);
+      canvasButton('lanJoin','加入房间',second,top+88,half,27,false,11);
+      type('房主发送邀请 · 客机发送回执',center,top+136,thin?8:10,colors.gold,'mono','center');
+    } else if(lan.phase==='invite') {
+      canvasButton('lanInvite','查看邀请',buttonX,top+88,half,27,false,11);
+      canvasButton('lanConfirm','粘贴回执',second,top+88,half,27,true,11);
+    } else if(lan.phase==='connecting'&&lan.response) {
+      canvasButton('lanResponse','查看回执',buttonX,top+88,innerWidth,27,true,11);
+    }
+  }
+  canvasButton('lanBack','返回标题',buttonX,top+211,innerWidth,21,false,10);
+}
+function leaveLanScreen() {
+  closeLanRoom();
+  lan.onExit?.();
+}
+function handleLanRoomKey(event) {
+  if(event.code==='Escape'||event.code==='Backspace') {
+    event.preventDefault();
+    if(!event.repeat) leaveLanScreen();
+    return true;
+  }
+  if(event.code==='Enter'&&lan.phase==='room') {
+    event.preventDefault();
+    if(!event.repeat) {
+      if(lan.role==='host'&&lan.localReady&&lan.remoteReady) startLanRoomMatch();
+      else toggleLanReady();
+    }
+    return true;
+  }
+  return false;
+}
+function handleLanRoomPointer(point) {
+  const hit=key=>inside(point,hitBoxes[key]);
+  if(hit('lanBack')) leaveLanScreen();
+  else if(hit('lanCreate')) void createLanInvitation().then(()=>{if(lan.phase==='invite') showLanCode('invite');});
+  else if(hit('lanJoin')) showLanCode('join');
+  else if(hit('lanInvite')) showLanCode('invite');
+  else if(hit('lanConfirm')) showLanCode('confirm');
+  else if(hit('lanResponse')) showLanCode('response');
+  else if(hit('lanPve')) setLanMode('pve');
+  else if(hit('lanPvp')) setLanMode('pvp');
+  else if(hit('lanMap')) {
+    const choices=lanStages[lan.mode];
+    setLanRoomRules(lan.mode,choices[(choices.indexOf(lan.stage)+1)%choices.length]);
+  }
+  else if(hit('lanAircraft')) enterHangar('lan');
+  else if(hit('lanReady')) toggleLanReady();
+  else if(hit('lanStart')) startLanRoomMatch();
+  else return false;
+  return true;
+}
+
+// Two-player arcade sorties. The host owns the world and both aircraft.
+let lanMatch=null;
+const lanFrameInterval=.05, lanMatchLimit=150;
+const lanInputActions=new Set(['pulse','tracer','decoy','cycle','select']);
+const neutralLanInput=()=>({axes:[0,0,0],power:0,throttle:null,pulse:false,tracer:false});
+const lanInputBlocked=()=>Boolean(lanMatch&&(lanMatch.menu||lanMatch.result||lanMatch.disconnected));
+function localLanInput() {
+  if(lanInputBlocked()) return neutralLanInput();
+  return {
+    axes:readFlightStick(),power:readThrottleAxis(),
+    throttle:touchThrottle,
+    pulse:keys.has('KeyJ')||combatPointers.has('pulse'),tracer:keys.has('KeyK')||combatPointers.has('tracer')
+  };
+}
+function readLanInput(input) {
+  if(!input || !Array.isArray(input.axes) || input.axes.length!==3 || !input.axes.every(Number.isFinite) ||
+    !Number.isFinite(input.power) || (input.throttle!==null&&!Number.isFinite(input.throttle))) return null;
+  return {axes:input.axes.map(value=>clamp(value,-1,1)),power:clamp(input.power,-1,1),
+    throttle:input.throttle===null?null:clamp(input.throttle,0,1),pulse:input.pulse===true,tracer:input.tracer===true};
+}
+function resetLanControls() {
+  keys.clear();combatPointers.clear();drag=null;touchThrottle=null;throttlePointer=null;
+}
+function lanSeatContext(match,run) {
+  const localAircraft=aircraft, localMission=mission, localModel=selectedAircraft;
+  aircraft=match.peerFlight;mission=match.peerMission;selectedAircraft=match.peerModel;match.remoteStep=true;
+  try {run();}
+  finally {
+    match.peerFlight=aircraft;match.peerMission=mission;match.remoteStep=false;
+    aircraft=localAircraft;mission=localMission;selectedAircraft=localModel;
+  }
+}
+function lanSpawnSeat(state,mode,role) {
+  const side=role==='host'?-1:1;
+  if(mode==='pve') {
+    const offset=rotate(state.attitude,[side*18,0,0]);
+    state.position=add(state.position,offset);
+  } else {
+    const [x,,z]=routePoint(2200,0,620);
+    const separation=195;
+    const altitude=90+Math.max(0,solidHeight(x,z-separation),solidHeight(x,z+separation));
+    state.position=[x,altitude,z+side*separation];
+    state.attitude=axisAngle([0,1,0],role==='host'?0:Math.PI);
+    state.velocity=add(mul(rotate(state.attitude,[0,0,1]),state.speed),flightEnvironment().wind);
+  }
+  state.agl=state.position[1]-Math.max(0,solidHeight(state.position[0],state.position[2]));
+  return state;
+}
+function lanSetRival(seat,opponent,health=100) {
+  const target=missionTarget('rival',opponent.position,health,0);
+  target.maxHealth=100;
+  seat.targets=[target];seat.locked=target;seat.charge=0;
+}
+function startLanMatch(config) {
+  if(!ready||flying || !['host','guest'].includes(config.role) ||
+    !['pve','pvp'].includes(config.mode) || ![1,4].includes(config.stage) ||
+    !aircraftModels[config.localAircraft] || !aircraftModels[config.remoteAircraft]) return;
+  selectedMission=config.mode==='pvp'?1:config.stage;
+  activeEnvironment=selectedMission;
+  selectedAircraft=config.localAircraft;
+  simulationTime=0;flying=true;paused=false;
+  wingman=null;
+  pressure=headroom=0;chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
+  resetLanControls();resetFlight();resetMission();
+  previous=aircraft=lanSpawnSeat(aircraft,config.mode,config.role);
+  const match=lanMatch={role:config.role,mode:config.mode,peerModel:config.remoteAircraft,peerFlight:null,
+    peerMission:null,peerInput:neutralLanInput(),peerInputAt:-1,peerInputSequence:-1,localInputSequence:0,
+    snapshotSequence:0,lastSnapshot:-1,clock:0,nextSend:0,peerImpact:0,
+    peerActions:[],frames:[],displayEffects:[],menu:false,result:null,disconnected:false,detached:false};
+  const otherRole=match.role==='host'?'guest':'host';
+  lanSeatContext(match,()=>{
+    aircraft=lanSpawnSeat(spawn(),config.mode,otherRole);
+    resetMission();
+  });
+  if(match.mode==='pvp') {
+    match.duelDecoys=[mission.decoys,match.peerMission.decoys];
+    const duel={...mission.config,name:'湖区对决',skill:0};
+    mission.config=match.peerMission.config=duel;
+    lanSetRival(mission,match.peerFlight);
+    lanSetRival(match.peerMission,aircraft);
+  } else {
+    match.peerMission.targets=mission.targets;
+    match.peerMission.campaign=mission.campaign;
+    match.peerMission.locked=null;match.peerMission.charge=0;
+  }
+  startAudio();
+}
+function lanInputAction(action,index) {
+  if(!lanMatch) return false;
+  if(lanInputBlocked()) return true;
+  if(lanMatch.role!=='guest') return false;
+  if(lanInputActions.has(action)) lanSendControl({type:'flightAction',action,index});
+  return true;
+}
+function lanUpdateRival(seat,opponent,health) {
+  const target=seat.targets[0];
+  target.position=opponent.position;
+  target.health=health;
+  const direction=rotate(opponent.attitude,[0,0,1]);
+  target.heading=Math.atan2(direction[0],direction[2]);
+}
+function scoreLanRivalHit(target,damage,missile) {
+  const match=lanMatch;
+  if(!match||match.mode!=='pvp'||match.result||target.health<=0) return;
+  const victim=match.remoteStep?match.localMission:match.peerMission;
+  if(!victim) return;
+  const absorb=Math.min(victim.shield,Math.floor(damage*.35));
+  victim.shield-=absorb;
+  victim.integrity=Math.max(0,victim.integrity-(damage-absorb));
+  victim.zones.body=Math.max(0,victim.zones.body-(damage-absorb)*2);
+  victim.damageFlash=.76;victim.damageReason='对决命中';
+  target.health=victim.integrity;
+  if(missile||!target.health) createBurst(target.position,missile);
+  else mission.effects.push({position:target.position.slice(),life:.18,kind:'spark'});
+  notifyMission(missile?'导弹命中 · 对手机':'机炮命中 · 对手机');
+}
+function updateLanPeer(dt,match) {
+  const local=mission;
+  match.localMission=local;
+  if(match.mode==='pve') {
+    const peer=match.peerMission;
+    peer.targets=local.targets;peer.campaign=local.campaign;
+    peer.points=local.points;peer.complete=local.complete;
+  }
+  lanSeatContext(match,()=>{
+    const input=match.clock-match.peerInputAt<.5?match.peerInput:neutralLanInput();
+    if(match.mode==='pve'&&mission.recoveryTime>0) {
+      mission.recoveryTime=Math.max(0,mission.recoveryTime-dt);
+      if(mission.recoveryTime===0) {
+        aircraft=lanSpawnSeat(spawn(),'pve','guest');
+        mission.shield=100;mission.integrity=100;
+        for(const zone of Object.keys(mission.zones)) mission.zones[zone]=100;
+        resetArmament();
+        notifyMission('机体复位 · 装备已补满');
+      }
+    }
+    const throttle=input.throttle??clamp(aircraft.throttle+.53*dt*input.power,0,1);
+    aircraft=stepFlight(aircraft,input.axes,throttle,dt,selectedAero(),(position,velocity,ground)=>{
+      if(match.peerImpact>=.22) return false;
+      match.peerImpact=1;
+      damageAircraft(ground<0?6:12,ground<0?'触水刮伤':'地形擦碰');
+      return true;
+    });
+    match.peerImpact=Math.max(0,match.peerImpact-dt*2.3);
+    mission.damageFlash=Math.max(0,mission.damageFlash-dt);
+    if(match.mode==='pvp') lanUpdateRival(mission,match.localFlight,local.integrity);
+    for(const action of match.peerActions.splice(0)) {
+      if(action.action==='pulse') firePulse();
+      if(action.action==='tracer') fireTracer();
+      if(action.action==='decoy') dropDecoy();
+      if(action.action==='cycle') cycleTarget(true);
+      if(action.action==='select'&&mission.targets[action.index]?.health)
+        chooseTarget(mission.targets[action.index],true);
+    }
+    updateMission(dt,false);
+    if(input.pulse) firePulse();
+    if(input.tracer) fireTracer();
+  });
+  if(match.mode==='pve') {
+    mission.points=match.peerMission.points;mission.complete=match.peerMission.complete;
+    if(mission.complete) mission.incoming=null;
+  } else lanUpdateRival(mission,match.peerFlight,match.peerMission.integrity);
+}
+function syncLanDuelThreat(seat,attacker,match,index) {
+  const deflected=seat.decoys<match.duelDecoys[index];
+  match.duelDecoys[index]=seat.decoys;
+  const effect=attacker.effects.find(candidate=>candidate.kind==='tracer'&&!candidate.deflected);
+  if(effect&&deflected) {
+    // A visible countermeasure removes the corresponding arcade projectile.
+    effect.deflected=true;
+    seat.incoming=null;
+  } else if(effect&&!deflected) {
+    if(!seat.incoming&&index===0) playCue('incoming');
+    seat.incoming={origin:effect.origin,duration:effect.duration,remaining:effect.life,evade:0};
+  } else seat.incoming=null;
+}
+function lanEffectFrames(seat) {
+  return seat.effects.slice(-40).map(effect=>{
+    if(!effect.target) return effect;
+    // Freeze the target position for the other cockpit's rendering.
+    const {target,...visible}=effect;
+    return {...visible,target:{position:target.position}};
+  });
+}
+function lanSeatFrame(seat) {
+  const {shield,integrity,zones,tracers,decoys,missileReserve,missileReload,tracerTime,
+    muzzleTime,launchTime,damageFlash,damageReason,recoveryTime,charge,lockLostTime,notice,noticeTime,incoming}=seat;
+  return {shield,integrity,zones,tracers,decoys,missileReserve,missileReload,tracerTime,
+    muzzleTime,launchTime,damageFlash,damageReason,recoveryTime,charge,lockLostTime,notice,noticeTime,incoming,
+    lock:seat.targets.indexOf(seat.locked),effects:lanEffectFrames(seat)};
+}
+function captureLanFrame(match) {
+  return {type:'flightFrame',sequence:match.snapshotSequence++,clock:match.clock,
+    flights:[aircraft,match.peerFlight],status:lanSeatFrame(match.peerMission),
+    effects:lanEffectFrames(mission),targets:match.peerMission.targets,points:mission.points,
+    campaign:mission.campaign,complete:mission.complete};
+}
+function finishLanMatch(match,result) {
+  if(match.result) return;
+  match.result=result;match.menu=false;
+  resetLanControls();
+  if(match.role==='host'&&!match.detached) {
+    lanSendControl({type:'flightResult',result,frame:captureLanFrame(match)});
+  }
+}
+function stepLanMatch(dt) {
+  const match=lanMatch;
+  if(!match||match.role!=='host'||match.result||match.disconnected) return;
+  match.clock+=dt;
+  if(!match.detached) {
+    match.localFlight=aircraft;
+    updateLanPeer(dt,match);
+  }
+  if(match.mode==='pve') {
+    if(mission.complete) finishLanMatch(match,'clear');
+  } else {
+    syncLanDuelThreat(mission,match.peerMission,match,0);
+    syncLanDuelThreat(match.peerMission,mission,match,1);
+    const home=mission.integrity, away=match.peerMission.integrity;
+    if(!home||!away||match.clock>=lanMatchLimit) {
+      const winner=home===away?'draw':home>away?'host':'guest';
+      finishLanMatch(match,winner);
+    }
+  }
+  if(!match.result&&!match.detached&&match.clock>=match.nextSend) {
+    match.nextSend=match.clock+lanFrameInterval;
+    lanSendSnapshot(captureLanFrame(match));
+  }
+}
+function validLanFlight(state) {
+  const validVector=(value,size)=>Array.isArray(value)&&value.length===size&&value.every(Number.isFinite);
+  return state&&validVector(state.position,3)&&validVector(state.velocity,3)&&validVector(state.attitude,4)&&
+    validVector(state.rates,3)&&validVector(state.stick,3)&&
+    ['speed','throttle','thrust','bank','agl','g','stallMeter'].every(field=>Number.isFinite(state[field]));
+}
+function receiveLanSnapshot(message) {
+  const match=lanMatch;
+  if(!match||match.disconnected||!message||!Number.isInteger(message.sequence)) return;
+  if(match.role==='host'&&message.type==='flightInput') {
+    if(message.sequence<=match.peerInputSequence) return;
+    const input=readLanInput(message.input);
+    if(!input) return;
+    match.peerInput=input;match.peerInputAt=match.clock;match.peerInputSequence=message.sequence;
+    return;
+  }
+  if(match.role!=='guest'||message.type!=='flightFrame'||message.sequence<=match.lastSnapshot||
+    !Number.isFinite(message.clock)||!Array.isArray(message.flights)||message.flights.length!==2||
+    !message.flights.every(validLanFlight)||!message.status||!Array.isArray(message.targets)||
+    !Array.isArray(message.effects)||!Array.isArray(message.status.effects)) return;
+  match.lastSnapshot=message.sequence;
+  match.frames.push(message);
+  if(match.frames.length>5) match.frames.shift();
+  if(match.frames.length===1) match.renderClock=message.clock;
+  match.clock=message.clock;
+  const {lock,effects,...status}=message.status;
+  if(!mission.incoming&&status.incoming) playCue('incoming');
+  if(mission.charge<1&&status.charge>=1) playCue('lock');
+  if(mission.muzzleTime<status.muzzleTime-.03) playCue('pulse');
+  if(mission.launchTime<status.launchTime-.03) playCue('tracer');
+  if(mission.decoys>status.decoys) playCue('decoy');
+  Object.assign(mission,status,{effects,targets:message.targets,points:message.points,
+    complete:message.complete,campaign:message.campaign,locked:message.targets[lock]||null});
+  match.displayEffects=message.effects;
+}
+function receiveLanControl(message) {
+  const match=lanMatch;
+  if(!match||!message||match.disconnected) return;
+  if(match.role==='host'&&message.type==='flightAction'&&lanInputActions.has(message.action)&&
+    match.peerActions.length<12) {
+    if(message.action!=='select'||Number.isInteger(message.index)&&message.index>=0&&message.index<64)
+      match.peerActions.push({action:message.action,index:message.index});
+  } else if(match.role==='guest'&&message.type==='flightResult'&&
+    ['clear','host','guest','draw'].includes(message.result)) {
+    receiveLanSnapshot(message.frame);
+    finishLanMatch(match,message.result);
+  }
+}
+function blendLanFlight(a,b,fraction) {
+  return {...b,position:blend(a.position,b.position,fraction),
+    velocity:blend(a.velocity,b.velocity,fraction),attitude:blendAttitude(a.attitude,b.attitude,fraction),
+    speed:mix(a.speed,b.speed,fraction),thrust:mix(a.thrust,b.thrust,fraction),
+    throttle:mix(a.throttle,b.throttle,fraction)};
+}
+function stepLanGuest(dt) {
+  const match=lanMatch;
+  if(!match||match.disconnected) return;
+  match.localClock=(match.localClock||0)+dt;
+  if(!match.result&&match.localClock>=match.nextSend) {
+    match.nextSend=match.localClock+1/30;
+    lanSendSnapshot({type:'flightInput',sequence:match.localInputSequence++,input:localLanInput()});
+  }
+  if(!match.frames.length) return;
+  const horizon=match.frames.at(-1).clock;
+  match.renderClock=clamp(match.renderClock+dt,Math.max(0,horizon-.12),Math.max(0,horizon-.045));
+  while(match.frames.length>1&&match.frames[1].clock<=match.renderClock) match.frames.shift();
+  const [first,second=first]=match.frames;
+  const fraction=clamp((match.renderClock-first.clock)/Math.max(step,second.clock-first.clock),0,1);
+  previous=aircraft;
+  aircraft=blendLanFlight(first.flights[1],second.flights[1],fraction);
+  match.peerFlight=blendLanFlight(first.flights[0],second.flights[0],fraction);
+  const aero=selectedAero();
+  warning=aircraft.agl<17&&(aircraft.velocity[1]<2||aircraft.agl<8)?'拉起':
+    aircraft.stall?'失速':aircraft.speed<aero.cruise*.53?'低速':aircraft.speed>109?'超速':'';
+  for(const effect of [...mission.effects,...match.displayEffects]) effect.life=Math.max(0,effect.life-dt);
+  for(const field of ['muzzleTime','launchTime','noticeTime','damageFlash'])
+    mission[field]=Math.max(0,mission[field]-dt);
+  if(mission.incoming) mission.incoming.remaining=Math.max(.001,mission.incoming.remaining-dt);
+}
+function lanEffectsForView() {
+  if(!lanMatch||lanMatch.detached) return mission?.effects;
+  const other=lanMatch.role==='host'?lanMatch.peerMission?.effects:lanMatch.displayEffects;
+  return [...mission.effects,...(other||[])].filter(effect=>effect.life>0&&!effect.deflected);
+}
+function renderLanJet(cam) {
+  const match=lanMatch;
+  if(!match||match.detached||!match.peerFlight || !insideView(project(match.peerFlight.position,cam),-20) ||
+    !clearSight(cam.eye,match.peerFlight.position)) return;
+  renderJet(cam,match.peerFlight,simulationTime,1,[0,0],match.peerModel);
+}
+function drawLanHud(s,cam) {
+  const match=lanMatch;
+  if(!match) return;
+  const x=width*.5, y=screenInsets[0]+52;
+  const remain=match.mode==='pvp'?' · '+Math.max(0,Math.ceil(lanMatchLimit-match.clock))+' 秒':
+    mission.campaign?' · '+(mission.campaign.wave+1)+'/'+mission.config.waves.length+' 波':'';
+  const tag=(match.detached?'电脑僚机':match.mode==='pvp'?'局域网 · 对决':'局域网 · 合作')+remain;
+  const size=width<295?8:9, span=width<295?86:126;
+  rect(x-span/2,y-10,span,13,colors.ink);
+  type(tag,x,y,size,colors.cream,'mono','center');
+  if(match.mode!=='pve'||match.detached||!match.peerFlight) return;
+  const color=colors.haze;
+  const peer=match.peerFlight.position;
+  const point=project(peer,cam);
+  if(insideView(point,10)&&clearSight(cam.eye,peer)) {
+    const [px,py]=point;
+    corners(px-7,py-7,14,14,4,color);
+    type('队友',px,py-10,8,color,'mono','center');
+  }
+  const {size:radarSize,left,top}=radarScopeBox();
+  const axis=radarHeading(s), offset=sub(peer,s.position);
+  const scope=radarOverview(s).scope, radius=Math.floor(radarSize/2)-7;
+  const px=left+radarSize/2+clamp(dot(offset,[axis[2],0,-axis[0]])/scope,-1,1)*radius;
+  const py=top+radarSize/2-clamp(dot(offset,axis)/scope,-1,1)*radius;
+  polygon([[px,py-3],[px+3,py+2],[px-3,py+2]],color);
+}
+function toggleLanMenu() {
+  if(!lanMatch||lanMatch.result||lanMatch.disconnected) return;
+  lanMatch.menu=!lanMatch.menu;
+  resetLanControls();
+}
+function handleLanFlightEnter() {
+  if(!lanMatch) return false;
+  if(lanMatch.result||lanMatch.disconnected) leaveLanMatch();
+  else if(lanMatch.menu) toggleLanMenu();
+  return true;
+}
+function drawLanOverlay() {
+  const match=lanMatch;
+  if(!match||!match.menu&&!match.result&&!match.disconnected) return;
+  const x=width/2, y=height/2-49;
+  rect(x-83,y,166,105,colors.ink);
+  corners(x-83,y,165,104,8,colors.gold);
+  const label=match.disconnected?'连接已断开':match.result==='clear'?'合作任务完成':
+    match.result==='draw'?'对决平局':match.result?match.result===match.role?'本局胜利':'本局结束':'联机菜单';
+  type(label,x,y+19,13,colors.cream,'display','center');
+  if(match.disconnected&&match.role==='host'&&match.mode==='pve') {
+    canvasButton('lanTakeover','由电脑接替',x-63,y+30,126,23,true,11);
+  } else if(match.result||match.disconnected) {
+    type(match.result==='clear'?mission.points+' 分':match.disconnected?'已停止同步':'湖区对决',x,y+44,10,colors.gold,'mono','center');
+  } else canvasButton('lanContinue','返回飞行',x-63,y+30,126,23,true,11);
+  canvasButton('lanReturn','返回房间',x-63,y+66,126,23,Boolean(match.result),11);
+}
+function handleLanFlightPointer(point) {
+  if(!lanMatch) return false;
+  if(inside(point,hitBoxes.lanTakeover)) {
+    const {peerModel}=lanMatch;
+    lanMatch.detached=true;lanMatch.disconnected=false;lanMatch.menu=false;
+    closeLanRoom();
+    resetWingman(peerModel);
+    return true;
+  }
+  if(inside(point,hitBoxes.lanReturn)) {leaveLanMatch();return true;}
+  if(inside(point,hitBoxes.lanContinue)||inside(point,hitBoxes.pause)) {toggleLanMenu();return true;}
+  return lanInputBlocked();
+}
+function leaveLanMatch() {
+  if(!lanMatch) return;
+  if(!lanMatch.detached&&!lanMatch.disconnected&&lan.connected) {returnLanToRoom();return;}
+  resetLanMatchToRoom();
+}
+function resetLanMatchToRoom() {
+  if(!lanMatch) return;
+  lanMatch=null;flying=false;paused=false;entryScreen='lan';wingman=null;
+  resetLanControls();
+  if(aircraft) sound(aircraft);
+}
+lan.onStart=startLanMatch;
+lan.onControl=receiveLanControl;
+lan.onSnapshot=receiveLanSnapshot;
+lan.onDisconnect=()=>{
+  if(lanMatch&&!lanMatch.detached&&!lanMatch.result) {
+    lanMatch.disconnected=true;lanMatch.menu=false;
+    resetLanControls();
+  }
+};
+lan.onRematch=resetLanMatchToRoom;
+
 // Input. All coordinates and hit areas are measured on the pixel canvas.
 function launch() {
-  if(!ready||flying||!hangar) return;
+  if(!ready||flying||entryScreen!=='hangar') return;
+  if(hangarReturn==='lan') {
+    if(lanConfirmAircraft(selectedAircraft)!==false) closeHangar();
+    return;
+  }
   fitAircraftToMission();
   activeEnvironment=selectedMission;
-  briefing=hangar=false;
+  entryScreen='title';
   flying=true;paused=false;simulationTime=0;
   pressure=headroom=0;
   chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
   resetFlight();startAudio();
   resetMission();
+  resetWingman();
   saveCheckpoint();
 }
+function openMissionSelection() {
+  if(ready && !flying && entryScreen==='title') entryScreen='missions';
+}
+function openMissionBriefing() {
+  if(!ready || flying || entryScreen!=='missions') return;
+  briefingReturn='missions';
+  entryScreen='briefing';
+}
+function closeBriefing() {
+  if(entryScreen==='briefing') entryScreen=briefingReturn;
+}
 function changeAircraft(direction) {
-  if(!ready||flying) return;
+  if(!ready||flying||entryScreen!=='hangar') return;
   const choices=compatibleAircraft();
   if(!choices.length) return;
   selectedAircraft=choices[wrap(choices.indexOf(selectedAircraft)+direction,choices.length)];
 }
 function returnToTitle() {
-  if(!paused || !flying) return;
+  if(!paused || !flying || lanMatch) return;
   saveCheckpoint();
   sound(aircraft);
-  flying=false;drag=null;throttlePointer=null;keys.clear();combatPointers.clear();
+  flying=false;paused=false;entryScreen='title';drag=null;throttlePointer=null;keys.clear();combatPointers.clear();
 }
 function togglePause() {
   if(!flying) return;
+  if(lanMatch) {toggleLanMenu();return;}
   paused=!paused;
   if(paused) saveCheckpoint();
   sound(aircraft);
 }
 function restartMission() {
-  if(!flying) return;
+  if(!flying || lanMatch) return;
   paused=true;
   returnToTitle();
-  enterHangar();
+  enterHangar('missions');
 }
 function openNextChapter() {
-  if(!flying||!mission?.campaign||!mission.complete||mission.config.next===undefined) return;
+  if(!flying||lanMatch||!mission?.campaign||!mission.complete||mission.config.next===undefined) return;
   const next=mission.config.next;
   paused=true;
   returnToTitle();
   selectedMission=next;
   fitAircraftToMission();
-  briefing=true;
+  briefingReturn='missions';
+  entryScreen='briefing';
 }
-function enterHangar() {
-  if(!ready||flying||hangar) return;
+function enterHangar(from=entryScreen) {
+  if(!ready||flying||entryScreen==='hangar') return;
+  if(from==='lan') {
+    if(!lan.connected || lan.phase!=='room') return;
+    if(lan.localReady) toggleLanReady();
+    selectedMission=lan.stage;
+    selectedAircraft=lan.localAircraft;
+  }
   fitAircraftToMission();
-  hangarFromBrief=briefing;
-  briefing=false;hangar=true;hangarDrag=null;
+  hangarReturn=from;
+  entryScreen='hangar';
+  hangarDrag=null;
 }
 function closeHangar() {
-  if(!hangar) return;
-  hangar=false;hangarDrag=null;briefing=hangarFromBrief;
+  if(entryScreen!=='hangar') return;
+  entryScreen=hangarReturn;
+  hangarDrag=null;
 }
+function openLanEntry() {
+  if(!ready || flying || entryScreen!=='title') return;
+  soloSelection={mission:selectedMission,aircraft:selectedAircraft};
+  entryScreen='lan';
+  openLanRoom(selectedAircraft);
+}
+function exitLanEntry() {
+  if(soloSelection) {
+    selectedMission=soloSelection.mission;
+    selectedAircraft=soloSelection.aircraft;
+    soloSelection=null;
+  }
+  entryScreen='title';
+}
+lan.onExit=exitLanEntry;
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
 const actionKeys=new Set(['Enter','Escape','KeyC','KeyR','KeyP','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Backspace',
-  'KeyJ','KeyK','KeyL','KeyT','KeyH','KeyB','KeyG','KeyN']);
+  'KeyJ','KeyK','KeyL','KeyT','KeyU','KeyB','KeyN']);
+function handleEntryKey(code) {
+  if(code==='Enter') {
+    if(entryScreen==='hangar') launch();
+    else if(entryScreen==='briefing') enterHangar();
+    else if(entryScreen==='missions') openMissionBriefing();
+    else if(entryScreen==='title') {
+      if(checkpoint) resumeCheckpoint(); else openMissionSelection();
+    }
+  } else if(code==='Escape' || code==='Backspace') {
+    if(entryScreen==='hangar') closeHangar();
+    else if(entryScreen==='briefing') closeBriefing();
+    else if(entryScreen==='missions'||entryScreen==='controls') entryScreen='title';
+    else if(code==='Escape') skipTutorial();
+  } else if(entryScreen==='hangar' && (code==='ArrowLeft'||code==='ArrowRight')) {
+    changeAircraft(code==='ArrowLeft'?-1:1);
+  } else if(entryScreen==='missions' && (code==='ArrowUp'||code==='ArrowDown')) {
+    changeMission(code==='ArrowUp'?-1:1);
+  }
+}
 addEventListener('keydown',event=>{
+  if(!flying&&entryScreen==='lan') {if(handleLanRoomKey(event)) event.preventDefault();return;}
   if(event.metaKey || !flightKeys.has(event.code)&&!actionKeys.has(event.code)) return;
   if(event.ctrlKey&&!flying&&!event.code.startsWith('Control')) return;
   event.preventDefault();
+  if(!flying) {if(!event.repeat) handleEntryKey(event.code);return;}
   keys.add(event.code);
   if(event.repeat) return;
-  if(event.code==='Enter') {
-    if(hangar) launch();
-    else if(paused&&flying) togglePause();
-    else enterHangar();
-  }
-  if(!briefing && (event.code==='ArrowLeft' || event.code==='ArrowRight')) changeAircraft(event.code==='ArrowLeft'?-1:1);
-  if(!briefing && !hangar && (event.code==='ArrowUp' || event.code==='ArrowDown')) changeMission(event.code==='ArrowUp'?-1:1);
+  if(event.code==='Enter'&&paused) togglePause();
+  if(event.code==='Enter'&&lanMatch && handleLanFlightEnter()) return;
   if(event.code==='Backspace') returnToTitle();
-  if(event.code==='Escape') {
-    if(hangar) closeHangar();
-    else if(briefing) toggleBriefing();
-    else if(flying) togglePause();
-    else skipTutorial();
-  }
-  if(event.code==='KeyH') {if(hangar) closeHangar();else enterHangar();}
-  if(event.code==='KeyG'&&!hangar) toggleBriefing();
+  if(event.code==='Escape'||event.code==='KeyP') togglePause();
+  if(lanInputBlocked()) return;
   if(event.code==='KeyN') openNextChapter();
   if(event.code==='KeyC') toggleView();
   if(event.code==='KeyR') restartMission();
-  if(event.code==='KeyP'&&flying) togglePause();
-  if(flying&&!paused && event.code==='KeyT') cycleTarget(true);
-  if(flying&&!paused && event.code==='KeyL') dropDecoy();
-  if(flying&&!paused && event.code==='KeyJ') firePulse();
-  if(flying&&!paused && event.code==='KeyK') fireTracer();
+  if(flying&&!paused && event.code==='KeyT' && !lanInputAction('cycle')) cycleTarget(true);
+  if(flying&&!paused && event.code==='KeyU') cycleWingmanCommand();
+  if(flying&&!paused && event.code==='KeyL' && !lanInputAction('decoy')) dropDecoy();
+  if(flying&&!paused && event.code==='KeyJ' && !lanInputAction('pulse')) firePulse();
+  if(flying&&!paused && event.code==='KeyK' && !lanInputAction('tracer')) fireTracer();
   if(flying&&!paused && event.code==='KeyB') deliverBeacon();
 });
 addEventListener('keyup',event=>keys.delete(event.code));
@@ -3019,9 +4147,10 @@ function throttleAt(y) {
 glass.addEventListener('pointerdown',event=>{
   if(event.button!==0) return;
   const p=pointer(event);
-  if(hangar) {
+  if(entryScreen==='hangar'&&!flying) {
     if(inside(p,hitBoxes.closeHangar)) closeHangar();
     else if(inside(p,hitBoxes.confirmSortie)) launch();
+    else if(inside(p,hitBoxes.wingmanOption)) wingmanEnabled=!wingmanEnabled;
     else {
       const choice=hitBoxes.aircraftChoices?.find(entry=>inside(p,entry.slot));
       const view=hitBoxes.hangarViews?.findIndex(slot=>inside(p,slot))??-1;
@@ -3034,36 +4163,38 @@ glass.addEventListener('pointerdown',event=>{
     }
     return;
   }
-  if(briefing) {
-    if(inside(p,hitBoxes.closeBrief)) toggleBriefing();
-    else if(inside(p,hitBoxes.executeBrief)) enterHangar();
-    return;
-  }
   if(!flying) {
-    if(inside(p,hitBoxes.launch)) enterHangar();
+    if(entryScreen==='lan') {handleLanRoomPointer(p);return;}
+    if(inside(p,hitBoxes.closeBrief)) closeBriefing();
+    else if(inside(p,hitBoxes.executeBrief)) enterHangar();
+    else if(inside(p,hitBoxes.backToTitle)) entryScreen='title';
+    else if(inside(p,hitBoxes.newMission)) openMissionSelection();
     else if(inside(p,hitBoxes.resumeCheckpoint)) resumeCheckpoint();
-    else if(inside(p,hitBoxes.hangar)) enterHangar();
-    else if(inside(p,hitBoxes.campaignBrief)) toggleBriefing();
-    else if(inside(p,hitBoxes.previousAircraft)) changeAircraft(-1);
-    else if(inside(p,hitBoxes.nextAircraft)) changeAircraft(1);
-    else if(inside(p,hitBoxes.previousMission)) changeMission(-1);
-    else if(inside(p,hitBoxes.nextMission)) changeMission(1);
+    else if(inside(p,hitBoxes.controls)) entryScreen='controls';
+    else if(inside(p,hitBoxes.openLan)) openLanEntry();
+    else if(inside(p,hitBoxes.missionBrief)) openMissionBriefing();
+    else {
+      const choice=hitBoxes.missionChoices?.find(entry=>inside(p,entry.slot));
+      if(choice) {selectedMission=choice.index;fitAircraftToMission();}
+    }
     return;
   }
+  if(lanMatch && handleLanFlightPointer(p)) return;
   if(inside(p,hitBoxes.returnToTitle)) {returnToTitle();return;}
   if(inside(p,hitBoxes.pause) || inside(p,hitBoxes.continueFlight)) {togglePause();return;}
   if(inside(p,hitBoxes.restartMission)) {restartMission();return;}
   if(paused) return;
+  if(inside(p,hitBoxes.wingmanCommand)) {cycleWingmanCommand();return;}
   if(inside(p,hitBoxes.nextChapter)) {openNextChapter();return;}
   if(inside(p,hitBoxes.beaconDrop)) {deliverBeacon();return;}
   if(selectRadarContact(p)) return;
-  if(inside(p,hitBoxes.cycleTarget)) {cycleTarget(true);return;}
-  if(inside(p,hitBoxes.decoy)) {dropDecoy();return;}
+  if(inside(p,hitBoxes.cycleTarget)) {if(!lanInputAction('cycle')) cycleTarget(true);return;}
+  if(inside(p,hitBoxes.decoy)) {if(!lanInputAction('decoy')) dropDecoy();return;}
   if(inside(p,hitBoxes.pulse) || inside(p,hitBoxes.tracer)) {
     const action=inside(p,hitBoxes.pulse)?'pulse':'tracer';
     combatPointers.set(action,event.pointerId);
     glass.setPointerCapture(event.pointerId);
-    if(action==='pulse') firePulse(); else fireTracer();
+    if(!lanInputAction(action)) {if(action==='pulse') firePulse(); else fireTracer();}
     return;
   }
   if(inside(p,hitBoxes.view)) {toggleView();return;}
@@ -3084,13 +4215,13 @@ glass.addEventListener('pointermove',event=>{
     hangarPitch=clamp(hangarPitch+(p[1]-hangarDrag.point[1])*.009,-1.05,1.05);
     hangarDrag.point=p;
   }
-  const overButton=['launch','resumeCheckpoint','hangar','closeHangar','confirmSortie','previousAircraft','nextAircraft',
-    'previousMission','nextMission','pause','continueFlight','restartMission','returnToTitle',
-    'campaignBrief','closeBrief','executeBrief','nextChapter','beaconDrop']
-    .some(name=>inside(p,hitBoxes[name])) || hitBoxes.aircraftChoices?.some(entry=>inside(p,entry.slot)) ||
+  const overButton=Object.values(hitBoxes).some(box=>Array.isArray(box)&&box.length===4&&box.every(Number.isFinite)&&inside(p,box)) ||
+    hitBoxes.aircraftChoices?.some(entry=>inside(p,entry.slot)) ||
+    hitBoxes.missionChoices?.some(entry=>inside(p,entry.slot)) ||
     hitBoxes.hangarViews?.some(slot=>inside(p,slot)) ||
     hitBoxes.radarTargets?.some(point=>Math.hypot(p[0]-point.x,p[1]-point.y)<8);
-  glass.style.cursor=overButton?'pointer':hangar?(hangarDrag?'grabbing':'grab'):flying&&!touch&&!paused?'crosshair':'default';
+  glass.style.cursor=overButton?'pointer':entryScreen==='hangar'&&!flying?(hangarDrag?'grabbing':'grab'):
+    flying&&!touch&&!paused?'crosshair':'default';
   if(event.pointerId===throttlePointer) throttleAt(p[1]);
   if(drag?.id===event.pointerId) {
     const reach=touch?24:44;
@@ -3156,14 +4287,21 @@ function draw(now) {
   hitBoxes={};
   if(!renderWorld) rect(0,0,width,height,colors.violet);
   if(!flying) {
-    if(hangar) {hangarScreen(realTime);return;}
+    if(entryScreen==='hangar') {hangarScreen(realTime);return;}
     if(renderWorld) renderWorld(titleCamera(realTime),realTime,null);
-    if(briefing) campaignBriefing(); else titleScreen(realTime);
+    if(entryScreen==='briefing') campaignBriefing();
+    else if(entryScreen==='missions') missionSelectionScreen();
+    else if(entryScreen==='controls') controlsScreen();
+    else if(entryScreen==='lan') drawLanRoom();
+    else titleScreen();
     return;
   }
-  if(!paused) {
+  if(!paused && !lanMatch?.disconnected && !(lanMatch?.result && lanMatch.role==='host')) {
     accumulator+=elapsed;
-    while(accumulator>=step) {simulate(step);simulationTime+=step;accumulator-=step;}
+    while(accumulator>=step) {
+      if(lanMatch?.role==='guest') stepLanGuest(step); else simulate(step);
+      simulationTime+=step;accumulator-=step;
+    }
   }
   const alpha=accumulator/step;
   const s={...aircraft,position:blend(previous.position,aircraft.position,alpha),
@@ -3174,25 +4312,30 @@ function draw(now) {
   renderWorld(cam,simulationTime,s);
   const canopyCoverage=viewBlend<.24?16:viewBlend<.48?11:viewBlend<.76?5:0;
   renderJet(cam,s,simulationTime,viewBlend>.35?clamp((viewBlend-.35)*2.6,0,1):0);
+  renderWingman(cam,simulationTime,alpha);
+  if(lanMatch) renderLanJet(cam);
   drawAirframeSmoke(s,cam);
   drawSpray(cam);
-  drawMissionWorld(cam);
+  drawMissionWorld(cam,lanMatch?lanEffectsForView():undefined);
+  drawWingmanMarker(cam,alpha);
   drawWeather(simulationTime);
   drawCanopy(canopyCoverage);
   if(canopyCoverage<16) edgeVignette();
   flightHud(s,cam,simulationTime);
   missionHud(s,cam);
-  campaignHud(s);
+  if(lanMatch) drawLanHud(s,cam); else campaignHud(s);
   missionNotice(s);
   aircraftStatusHud();
   environmentHud();
+  drawWingmanHud();
   drawWeaponFeedback(s,cam);
   drawDamageCue();
-  tutorialHud(s);
+  if(!lanMatch) tutorialHud(s);
   if(touch) touchHud(s);
   const pauseWidth=touch?30:43;
-  canvasButton('pause',paused?'继续':'暂停',width-screenInsets[1]-pauseWidth-10,screenInsets[0]+8,pauseWidth,18,false,10);
-  if(paused) {
+  canvasButton('pause',lanMatch?'菜单':paused?'继续':'暂停',width-screenInsets[1]-pauseWidth-10,screenInsets[0]+8,pauseWidth,18,false,10);
+  if(lanMatch) drawLanOverlay();
+  else if(paused) {
     const center=width/2, y=height/2-66;
     rect(center-78,y,156,132,colors.ink);
     corners(center-78,y,155,131,8,dim);
@@ -3202,7 +4345,7 @@ function draw(now) {
     type('机炮 '+kit.cannon+' 点 · 锁定 '+kit.lockTime.toFixed(2)+' 秒',center,y+44,9,dim,'mono','center');
     canvasButton('continueFlight','继续飞行',center-60,y+53,120,20,true,11);
     canvasButton('restartMission','重开本关',center-60,y+77,120,20,false,11);
-    canvasButton('returnToTitle','保存并退出',center-60,y+101,120,20,false,11);
+    canvasButton('returnToTitle','保存并返回标题',center-60,y+101,120,20,false,10);
   }
   if(realTime-audioTime>.038) {sound(s);audioTime=realTime;}
 }
@@ -3214,6 +4357,8 @@ async function boot() {
     event.preventDefault();
     failure='图形连接已中断，请刷新页面';
     ready=flying=false;renderWorld=null;paused=true;
+    closeLanRoom();lanMatch=null;
+    entryScreen='title';
     if(aircraft) sound(aircraft);
   });
   const building=buildTerrain();
