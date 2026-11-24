@@ -1748,6 +1748,62 @@ const titleGlyphs={
   O:['011110','110011','110011','110011','110011','110011','011110'],
   L:['110000','110000','110000','110000','110000','110000','111111']
 };
+function makePatrolMark() {
+  const canvas=document.createElement('canvas');
+  canvas.width=canvas.height=32;
+  const paint=canvas.getContext('2d');
+  const block=(color,x,y,w,h=1)=>{
+    paint.fillStyle=color;
+    paint.fillRect(x,y,w,h);
+  };
+  // Integer scanlines keep the emblem crisp in both the title and the browser tab.
+  function shape(color,points) {
+    for(let y=0;y<32;y++) {
+      const intersections=[];
+      for(let i=0;i<points.length;i++) {
+        const [ax,ay]=points[i], [bx,by]=points[(i+1)%points.length];
+        if((ay<=y+.5 && by>y+.5)||(by<=y+.5 && ay>y+.5)) {
+          intersections.push(Math.ceil(ax+(bx-ax)*(y+.5-ay)/(by-ay)-.5));
+        }
+      }
+      intersections.sort((a,b)=>a-b);
+      for(let i=0;i+1<intersections.length;i+=2) {
+        block(color,intersections[i],y,intersections[i+1]-intersections[i]);
+      }
+    }
+  }
+  shape(colors.mauve,[[4,0],[28,0],[28,2],[30,2],[30,4],[32,4],[32,28],[30,28],
+    [30,30],[28,30],[28,32],[4,32],[4,30],[2,30],[2,28],[0,28],[0,4],[2,4],[2,2],[4,2]]);
+  shape(colors.ink,[[5,1],[27,1],[27,3],[29,3],[29,5],[31,5],[31,27],[29,27],
+    [29,29],[27,29],[27,31],[5,31],[5,29],[3,29],[3,27],[1,27],[1,5],[3,5],[3,3],[5,3]]);
+  block(colors.copper,22,6,5,5);
+  block(colors.gold,23,5,3,7);
+  block(colors.gold,22,7,5,3);
+  block(colors.cream,23,6,3,3);
+  block(colors.indigo,4,22,24,4);
+  block(colors.slate,7,25,18,3);
+  block(colors.mauve,4,22,9);
+  block(colors.mauve,21,22,7);
+  block(colors.peach,21,24,5);
+  block(colors.copper,17,26,7);
+  block(colors.mauve,19,28,3);
+  const jet=[[16,3],[18,7],[18,12],[25,17],[26,20],[20,19],[19,18],[19,23],
+    [16,21],[13,23],[13,18],[12,19],[6,20],[7,17],[14,12],[14,7]];
+  shape(colors.copper,jet.map(([x,y])=>[x,y+1]));
+  shape(colors.cream,jet);
+  shape(colors.peach,[[18,13],[25,17],[25,19],[18,17]]);
+  block(colors.slate,15,8,2,4);
+  block(colors.gold,15,23,2,4);
+  block(colors.peach,15,27,2);
+  return canvas;
+}
+const patrolMark=makePatrolMark();
+const patrolFavicon=document.createElement('link');
+patrolFavicon.rel='icon';
+patrolFavicon.type='image/png';
+patrolFavicon.href=patrolMark.toDataURL();
+document.head.append(patrolFavicon);
+
 function wordmark(x,y,scale) {
   const word='PATROL', gap=2, left=Math.round(x-(word.length*(6+gap)-gap)*scale/2);
   for(const [index,letter] of [...word].entries()) titleGlyphs[letter].forEach((row,dy)=>{
@@ -1799,12 +1855,10 @@ function titleScreen(time) {
   rect(0,height-25,width,25,pattern(colors.ink,14));
   const center=width/2, middle=Math.round(height/2);
   const scale=width<190?3:width<325?4:height<290?5:height>=400?7:6;
-  const emblemY=middle-110;
-  for(const {vertices,color} of airplanePreviews[selectedAircraft]) {
-    polygon(vertices.map(([x,,z])=>[center+x*3.5,emblemY-z*3.2]),colors[color]);
-  }
-  line(center-38,emblemY+2,center-19,emblemY+2,colors.haze);
-  line(center+19,emblemY+2,center+38,emblemY+2,colors.haze);
+  const emblemY=middle-110, emblemSize=height<300?24:32;
+  ctx.drawImage(patrolMark,Math.round(center-emblemSize/2),emblemY-emblemSize/2,emblemSize,emblemSize);
+  line(center-42,emblemY,center-22,emblemY,colors.haze);
+  line(center+22,emblemY,center+42,emblemY,colors.haze);
   wordmark(center,middle-88,scale);
   const subtitle=selectedMission===0?'秋日湖区 · 最后一缕光':'秋日湖区 · '+environments[selectedMission].area;
   type(subtitle,center+1,middle-20,width<235?11:13,colors.ink,'display','center');
