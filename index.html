@@ -3575,12 +3575,22 @@ const onlineErrors={
   'rate-limit':'服务繁忙，请稍后重试','relay-unavailable':'直连未成功，线上中继暂不可用'
 };
 async function onlineRequest(path,room,token) {
-  const options={method:'POST',signal:AbortSignal.any([room.abort.signal,AbortSignal.timeout(12000)])};
+  const controller=new AbortController();
+  const cancel=()=>controller.abort();
+  if(room.abort.signal.aborted) cancel();
+  else room.abort.signal.addEventListener('abort',cancel,{once:true});
+  const timeout=setTimeout(cancel,12000);
+  const options={method:'POST',signal:controller.signal};
   if(token) options.headers={Authorization:'Bearer '+token};
-  let response;
-  try {response=await fetch(path,options);}
-  catch {throw new Error('无法连接在线房间服务，请稍后再试');}
-  const data=await response.json().catch(()=>null);
+  let response,data;
+  try {
+    response=await fetch(path,options);
+    data=await response.json().catch(()=>null);
+  } catch {throw new Error('无法连接在线房间服务，请稍后再试');}
+  finally {
+    clearTimeout(timeout);
+    room.abort.signal.removeEventListener('abort',cancel);
+  }
   if(!response.ok || !data)
     throw new Error(onlineErrors[data?.error]||(response.status===429?'今日用量已达限额，请稍后再试':
       response.status===404?'房间已过期或不存在':response.status===409?'房间已经有两位玩家':'在线房间服务暂不可用'));
