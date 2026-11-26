@@ -988,7 +988,7 @@ const missions=[
     briefing:'暮湾的引航台突然静默。有人把无人机编队和巡逻车留在了谷口。沿旧航路找到信号中断的源头。',
     waves:[
       {line:'绕过湖湾巡逻',contacts:[['drone',2],['convoy',1]]},
-      {line:'截断伪造信号',contacts:[['interceptor',2],['relay',1],['lookout',1]]}
+      {line:'截断伪造信号',contacts:[['mig21',2],['interceptor',1],['relay',1],['lookout',1]]}
     ]},
   {name:'孤灯巡线',difficulty:'进阶',skill:1,role:'bomber',chapter:2,next:6,
     briefing:'山村的最后一盏信号灯还亮着。换乘大型飞机，在两处断点投送引航信标，给等候救援的机组留出归路。',
@@ -1000,31 +1000,32 @@ const missions=[
     briefing:'两盏灯同时收到了伪造的呼叫。护航编队锁定了移动中继车，从山谷两侧包抄的无人机正试图夺回它。',
     waves:[
       {line:'追踪移动中继',contacts:[['convoy',2],['drone',2]]},
-      {line:'穿过双重干扰',contacts:[['interceptor',3],['jammer',1],['relay',1]]}
+      {line:'穿过双重干扰',contacts:[['su27',2],['f16',2],['jammer',1],['relay',1]]}
     ]},
   {name:'雾脊引航',difficulty:'挑战',skill:2,role:'bomber',chapter:4,next:8,
     briefing:'晚雾已经越过山脊。护航机群会开辟入口，你的任务是沿备用航线分两次投送信标，照亮撤离通道。',
     waves:[
       {line:'布设山前信标',contacts:[['beacon',1],['drone',2]]},
-      {line:'照亮雾脊出口',contacts:[['beacon',1],['lookout',1],['interceptor',2]]}
+      {line:'照亮雾脊出口',contacts:[['beacon',1],['lookout',1],['f15',2],['interceptor',1]]}
     ]},
-  {name:'群山归航',difficulty:'挑战',skill:2,chapter:5,
+  {name:'群山归航',difficulty:'挑战',skill:2,chapter:5,next:9,
     briefing:'备用航线已经点亮。最后一批救援机正在返航，山脊后的指挥编队和地面中继站仍在争夺空域。',
     waves:[
       {line:'清出返航空域',contacts:[['interceptor',3],['convoy',1],['jammer',1]]},
-      {line:'迎击压轴编队',contacts:[['guardian',2],['interceptor',3],['lookout',1],['relay',1]]},
-      {line:'护送最后一盏灯',contacts:[['guardian',3],['interceptor',3],['jammer',1]]}
+      {line:'迎击压轴编队',contacts:[['guardian',2],['f18',2],['su34',2],['lookout',1],['relay',1]]},
+      {line:'护送最后一盏灯',contacts:[['guardian',2],['j11',3],['f22',2],['jammer',1]]}
     ]},
-  {name:'云海防线',difficulty:'联合闯关',skill:1,coop:true,waves:[
-    {line:'苏系先锋',contacts:[['su27',2],['mig21',1]]},
-    {line:'美系追击',contacts:[['f15',2],['f16',2]]},
-    {line:'混合编队',contacts:[['su27',2],['f18',2],['j11',1]]},
-    {line:'电子战支援',contacts:[['jammer',1],['su34',2],['su27',2]]},
-    {line:'多系联军',contacts:[['su27',1],['f15',1],['f22',1],['j11',1],['drone',2],['lookout',1]]},
-    {line:'空天母舰 · 云脊',contacts:[['carrier',1],['f22',1],['su34',1]]}
+  {name:'云海防线',difficulty:'终章',skill:2,chapter:6,coop:true,
+    briefing:'救援机已越过北岭，最后一批撤离航班仍在云下等候。截住来袭机群，击退空天母舰「云脊」，让引航灯留到天亮。',waves:[
+    {line:'苏系先锋',contacts:[['su27',3],['mig21',2],['su34',1]]},
+    {line:'美系追击',contacts:[['f15',3],['f16',2],['f22',2]]},
+    {line:'混合编队',contacts:[['su27',2],['su34',2],['f18',2],['j11',2]]},
+    {line:'电子战支援',contacts:[['jammer',2],['su34',3],['su27',3],['mig21',1]]},
+    {line:'多系联军',contacts:[['su27',2],['f15',2],['f22',2],['j11',2],['drone',2],['lookout',1]]},
+    {line:'空天母舰 · 云脊',contacts:[['carrier',1],['f22',2],['su34',2],['j11',2],['jammer',1]]}
   ]}
 ];
-const soloMissions=missions.filter(config=>!config.coop);
+const soloMissions=missions;
 // Every sortie starts in a different section of the periodic height field and has its own weather.
 const environments=[
   ['暮湾湖区','17:35','晚霞 · 微风',[0,0],1,0,58,[-.416,.115,.902],[.59,1,1,0],[1.8,0,-.7],0],
@@ -1155,14 +1156,19 @@ function advanceCampaign() {
   if(!campaign || mission.targets.some(target=>target.health>0) || campaign.wave+1>=mission.config.waves.length) return false;
   campaign.wave++;
   campaign.banner=5;
-  const {decoys}=selectedLoadout();
-  mission.decoys=Math.min(decoys,mission.decoys+1);
+  replenishWaveSeat(mission);
+  const other=lanMatch?.remoteStep?lanMatch.localMission:lanMatch?.peerMission;
+  if(lanMatch?.mode==='pve'&&!lanMatch.detached&&other) replenishWaveSeat(other);
   mission.warningTime=5;
   mission.incoming=null;
   spawnCampaignWave();
   cycleTarget();
   notifyMission(mission.config.waves[campaign.wave].line);
   return true;
+}
+function replenishWaveSeat(seat) {
+  seat.decoys=Math.min(seat.decoyCap??selectedLoadout().decoys,seat.decoys+1);
+  if(seat.special) seat.specialAmmo=Math.min(specialWeapons[seat.special.index].ammo,seat.specialAmmo+1);
 }
 const beaconDistance=(target,s=aircraft)=>length(sub(target.position,s.position));
 function nearestBeacon() {
@@ -1225,12 +1231,15 @@ function campaignHud(s) {
   }
   if(mission.complete && config.next!==undefined) {
     canvasButton('nextChapter','下一章简报',x,y+height+4,Math.min(79,w),19,true,9);
+  } else if(mission.complete&&mission.creditsSeen&&isSoloFinale(config)) {
+    canvasButton('creditsReplay','观看致谢',x,y+height+4,Math.min(79,w),19,true,9);
   }
 }
 function resetArmament() {
   const {tracers,decoys}=selectedLoadout();
-  Object.assign(mission,{tracers,decoys,missileReserve:tracers*11,missileReload:0,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
+  Object.assign(mission,{tracers,decoys:mission.decoyCap??decoys,missileReserve:tracers*11,missileReload:0,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
     warningTime:5,charge:0,manualLockTime:0,lockLostTime:0,incoming:null,effects:[]});
+  if(mission.special) {mission.specialAmmo=specialWeapons[mission.special.index].ammo;mission.specialTime=0;}
 }
 const missileReloadDelay=(kit,multiplier=1)=>(2.55+kit.lockTime*.9)*multiplier;
 function updateMissileRack(dt) {
@@ -1239,12 +1248,12 @@ function updateMissileRack(dt) {
     mission.missileReload=0;
     return;
   }
-  if(mission.missileReload<=0) mission.missileReload=missileReloadDelay(kit,mission.duelPart?.reload);
+  if(mission.missileReload<=0) mission.missileReload=missileReloadDelay(kit,mission.loadoutPart?.reload);
   mission.missileReload=Math.max(0,mission.missileReload-dt);
   if(mission.missileReload===0) {
     mission.tracers++;
     mission.missileReserve--;
-    if(mission.tracers<kit.tracers&&mission.missileReserve) mission.missileReload=missileReloadDelay(kit,mission.duelPart?.reload);
+    if(mission.tracers<kit.tracers&&mission.missileReserve) mission.missileReload=missileReloadDelay(kit,mission.loadoutPart?.reload);
   }
 }
 const supportActive=kind=>mission.targets.some(target=>target.kind===kind&&target.health>0);
@@ -1310,7 +1319,7 @@ function notifyMission(message) {
 }
 function damageAircraft(amount,reason) {
   if(!mission || mission.recoveryTime>0) return;
-  const absorbed=reason==='来袭命中'?Math.min(mission.shield,Math.floor(amount*.6)):0;
+  const absorbed=reason==='来袭命中'?Math.min(mission.shield,Math.floor(amount*(mission.loadoutPart?.campaignAbsorb??.6))):0;
   const damage=amount-absorbed;
   mission.shield-=absorbed;
   mission.integrity=Math.max(0,mission.integrity-damage);
@@ -1424,7 +1433,7 @@ function fireTracer() {
     return;
   }
   mission.tracers--;
-  if(mission.missileReserve&&mission.missileReload<=0) mission.missileReload=missileReloadDelay(selectedLoadout(),mission.duelPart?.reload);
+  if(mission.missileReserve&&mission.missileReload<=0) mission.missileReload=missileReloadDelay(selectedLoadout(),mission.loadoutPart?.reload);
   playCue('tracer');
   notifyMission('导弹发射 · 待发 '+mission.tracers+' 枚');
   mission.tracerTime=.64+mission.lockTime*.35;
@@ -1436,22 +1445,28 @@ function fireTracer() {
   effect.position=effect.origin;
   mission.effects.push(effect);
 }
-function fireDuelSpecial() {
-  if(!mission?.special || mission.recoveryTime || mission.specialTime>0 || lanMatch?.result) return;
-  const weapon=duelWeapons[mission.special.index], target=mission.locked;
+function fireSpecialWeapon() {
+  if(!mission?.special || mission.complete || mission.recoveryTime || mission.specialTime>0 || lanMatch?.result) return;
+  const weapon=specialWeapons[mission.special.index], target=mission.locked;
   if(!mission.specialAmmo) {notifyMission('特殊弹已用尽');return;}
   const nose=rotate(aircraft.attitude,[0,0,1]);
   if(!target || mission.charge<1 || !trackable(target,nose,weapon.lock) || targetRange(target)>weapon.range) {
     notifyMission('特殊弹 · 等待有效锁定');return;
   }
   mission.specialAmmo--;
-  mission.specialTime=weapon.cooldown*(mission.duelPart.cooldown??1);
+  mission.specialTime=weapon.cooldown*(mission.loadoutPart.cooldown??1);
   mission.launchTime=.45;
+  const locks=[target];
+  if(weapon.shots>1) {
+    const others=mission.targets.filter(contact=>contact!==target&&trackable(contact,nose,weapon.lock)&&targetRange(contact)<=weapon.range);
+    others.sort((a,b)=>targetRange(a)-targetRange(b));
+    locks.push(...others.slice(0,weapon.shots-1));
+  }
   for(let index=0;index<weapon.shots;index++) {
     const spread=index-(weapon.shots-1)/2;
     const origin=add(aircraft.position,rotate(aircraft.attitude,[spread*1.25,-.55,.75]));
     const duration=.85+Math.abs(spread)*.09+index*.035;
-    mission.effects.push({origin,position:origin,target,duration,life:duration,arc:6+index*3,
+    mission.effects.push({origin,position:origin,target:locks[index%locks.length],duration,life:duration,arc:6+index*3,
       kind:'tracer',damage:weapon.damage,volley:simulationTime,glow:colors.mist});
   }
   playCue('tracer');
@@ -1469,22 +1484,25 @@ const flightPatterns={
   su27:[.43,35,10],su34:[.32,37,8],mig21:[.48,28,12],f15:[.48,38,10],f16:[.56,30,15],
   f18:[.39,34,14],f22:[.60,38,18],j11:[.41,37,12]
 };
+const heavyAttackers=new Set(['su34','f15','f22','guardian','carrier']);
 function scheduleCoopAttack(dt) {
   const rangeLimit=supportActive('lookout')?540:460;
   mission.warningTime=Math.max(0,mission.warningTime-dt);
   if(mission.warningTime>0) return;
-  let source=null, distance=rangeLimit;
+  let source=null, distance=rangeLimit, best=Infinity;
   for(const contact of mission.targets) {
     if(!contact.health || !isAirContact(contact) || ['lookout','jammer'].includes(contact.kind)) continue;
     const range=targetRange(contact);
-    if(range>=distance || !clearSight(contact.position,aircraft.position)) continue;
-    source=contact;distance=range;
+    const priority=range-(heavyAttackers.has(contact.kind)?75:0);
+    if(range>=rangeLimit || priority>=best || !clearSight(contact.position,aircraft.position)) continue;
+    source=contact;distance=range;best=priority;
   }
   if(!source) return;
   const weapon=distance<145?'cannon':'missile';
+  const heavy=heavyAttackers.has(source.kind);
   const duration=weapon==='cannon'?.95:source.kind==='carrier'?2.3:2.8;
-  mission.incoming={origin:source.position.slice(),duration,remaining:duration,evade:0,weapon,
-    damage:weapon==='cannon'?11:source.kind==='carrier'?32:22};
+  mission.incoming={origin:source.position.slice(),duration,remaining:duration,evade:0,weapon,heavy,
+    damage:source.kind==='carrier'?48:weapon==='cannon'?(heavy?20:11):(heavy?34:22)};
   playCue('incoming');
 }
 function updateIncomingEvasion(incoming,dt) {
@@ -1551,7 +1569,7 @@ function updateMission(dt,advanceWorld=true) {
     if(keys.has('KeyJ')||combatPointers.get('pulse')!==undefined) firePulse();
     if(keys.has('KeyK')||combatPointers.get('tracer')!==undefined) fireTracer();
   }
-  if(mission.complete || !config.skill) return;
+  if(mission.complete || (!config.skill&&!config.chapter)) return;
   const incoming=mission.incoming;
   if(incoming) {
     if(updateIncomingEvasion(incoming,dt)) return;
@@ -1563,7 +1581,7 @@ function updateMission(dt,advanceWorld=true) {
       mission.warningTime=3.5-config.skill*.65;
     }
   } else {
-    if(config.coop) {scheduleCoopAttack(dt);return;}
+    if(config.coop||config.chapter) {scheduleCoopAttack(dt);return;}
     const radius=supportActive('lookout')?520:340;
     const source=mission.targets.find(target=>target.health>0&&isAirContact(target)&&
       target.kind!=='lookout'&&target.kind!=='jammer'&&targetRange(target)<radius);
@@ -2282,6 +2300,7 @@ function hangarScreen(time) {
   if(!room) {
     const x=narrow?12:returnX-confirmWidth-105, y=narrow?32:15;
     canvasButton('wingmanOption',wingmanEnabled?'僚机：开':'僚机：关',x,y,narrow?58:88,narrow?13:21,wingmanEnabled,narrow?8:10);
+    if(selectedMission) canvasButton('soloLoadout','武装',x+(narrow?61:0),narrow?32:36,narrow?42:88,12,false,8);
   }
   const available=compatibleAircraft();
   const columns=narrow?2:1, rowCount=Math.ceil(available.length/columns);
@@ -2548,7 +2567,7 @@ function insideView(point,margin=0) {
 }
 const coopMeshDistance=420;
 function renderCoopAircraft(cam) {
-  if(!mission?.config.coop) return;
+  if(!mission?.config.coop&&!mission?.config.chapter) return;
   const aircraftRender={stick:[0,0],thrust:.34};
   for(const target of mission.targets) {
     const model=coopFighters[target.kind];
@@ -2924,7 +2943,7 @@ function aircraftStatusHud() {
     type(value,valueX,lineY,10,color,'mono','right');
   });
   if(mission.special) {
-    const lineY=y+(touch?52:61), weapon=duelWeapons[mission.special.index];
+    const lineY=y+(touch?52:61), weapon=specialWeapons[mission.special.index];
     type(weapon.name,column,lineY,8,hud);
     const value=mission.specialTime>0?Math.ceil(mission.specialTime)+'秒':mission.specialAmmo+'轮';
     type(value,valueX,lineY,8,dim,'mono','right');
@@ -2998,7 +3017,8 @@ function missionNotice(s) {
     const radians=Math.atan2(dot(offset,[direction[2],0,-direction[0]]),dot(offset,direction));
     const directions=['正前','右前','右侧','右后','后方','左后','左侧','左前'];
     const bearing=directions[wrap(Math.round(radians/(Math.PI/4)),8)];
-    message=(threat.weapon==='cannon'?'机炮点射 ':'来袭 ')+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+
+    const label=threat.weapon==='cannon'?(threat.heavy?'重型机炮 ':'机炮点射 '):(threat.heavy?'重弹来袭 ':'来袭 ');
+    message=label+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+
       ' 秒 · 规避 '+Math.round((threat.evade||0)*100)+'%';
   }
   const compact=width<330, center=width/2;
@@ -3209,7 +3229,8 @@ function saveCheckpoint() {
     effects:mission.effects.filter(effect=>effect.kind==='tracer').map(({target,...effect})=>
       ({...effect,targetIndex:mission.targets.indexOf(target)})),
     status:{tracers,decoys,shield,integrity,zones,points,complete,warningTime,incoming,recoveryTime,
-      missileReserve,missileReload,tracerTime,campaign:mission.campaign},
+      missileReserve,missileReload,tracerTime,campaign:mission.campaign,creditsSeen:mission.creditsSeen===true},
+    combat:mission.special?{kit:mission.combatKit,ammo:mission.specialAmmo,cooldown:mission.specialTime}:null,
     tutorial:{skipped:tutorialSkipped,lesson,freeTime,milestones:[...milestones]},
     wingman:wingmanSnapshot(), wingmanEnabled
   };
@@ -3227,6 +3248,16 @@ function resumeCheckpoint() {
   activeEnvironment=environments[snapshot.environment]?snapshot.environment:0;
   flying=true;paused=false;simulationTime=snapshot.time;
   resetFlight();resetMission();
+  if(selectedMission) {
+    const stored=snapshot.combat;
+    if(validCombatKit(stored?.kit)) soloCombatKit=stored.kit;
+    configureCombatSeat(mission,soloCombatKit);
+    if(validCombatKit(stored?.kit)) {
+      const weapon=specialWeapons[mission.special.index];
+      if(Number.isInteger(stored.ammo)) mission.specialAmmo=clamp(stored.ammo,0,weapon.ammo);
+      if(Number.isFinite(stored.cooldown)) mission.specialTime=clamp(stored.cooldown,0,weapon.cooldown);
+    }
+  }
   aircraft=snapshot.flight;previous=aircraft;
   chase=Boolean(snapshot.chase);viewBlend=viewFrom=Number(chase);viewElapsed=.35;
   Object.assign(mission,snapshot.status);
@@ -3251,22 +3282,23 @@ function resumeCheckpoint() {
 addEventListener('pagehide',saveCheckpoint);
 
 // LAN transport and room. The browser exchanges gathered candidates through the two copyable codes.
-const lanProtocol=2;
-const lanCodePrefix='PATROL2.';
-const duelWeapons=[
+const lanProtocol=3;
+const lanCodePrefix='PATROL3.';
+const specialWeapons=[
   {name:'4AAM',shots:4,damage:12,ammo:6,cooldown:7,range:400,lock:.72,description:'四发齐射，冷却较短'},
   {name:'8AAM',shots:8,damage:9,ammo:3,cooldown:12,range:460,lock:.82,description:'八发齐射，备弹较少'},
   {name:'远程单发',shots:1,damage:58,ammo:4,cooldown:10,range:680,lock:.94,description:'射程更远，锁定要求更高'}
 ];
-const duelParts=[
+const equipmentParts=[
   {name:'复合装甲',description:'机体最大耐久增加 30',hull:30},
   {name:'速装挂架',description:'普通弹补装加快 25%',reload:.75},
   {name:'高效冷却',description:'特殊弹冷却缩短 25%',cooldown:.75},
   {name:'干扰吊舱',description:'出击时额外携带 2 枚热诱弹',decoys:2}
 ];
-const defaultDuelKit=[0,0];
-const validDuelKit=kit=>Array.isArray(kit)&&kit.length===2&&kit.every(Number.isInteger)&&
-  Boolean(duelWeapons[kit[0]]&&duelParts[kit[1]]);
+const defaultCombatKit=[0,0];
+let soloCombatKit=defaultCombatKit.slice();
+const validCombatKit=kit=>Array.isArray(kit)&&kit.length===2&&kit.every(Number.isInteger)&&
+  Boolean(specialWeapons[kit[0]]&&equipmentParts[kit[1]]);
 const lanStages={pve:[9,1,4],pvp:[1]};
 const lan={
   role:null, phase:'idle', connected:false, mode:'pve', stage:lanStages.pve[0], localAircraft:0, remoteAircraft:0,
@@ -3301,8 +3333,8 @@ function closeLanRoom() {
 }
 function openLanRoom(aircraftIndex=0) {
   closeLanRoom();
-  lan.localKit=defaultDuelKit.slice();
-  lan.remoteKit=defaultDuelKit.slice();
+  lan.localKit=defaultCombatKit.slice();
+  lan.remoteKit=defaultCombatKit.slice();
   lan.localAircraft=lanDefaultAircraft(aircraftIndex);
   lan.remoteAircraft=lanDefaultAircraft(0);
   if(typeof RTCPeerConnection!=='function') lan.status='此浏览器未提供局域网连接功能';
@@ -3523,14 +3555,14 @@ function applyLanPacket(packet) {
   if(!lan.helloReceived) return;
   if(packet.kind==='leave') {failLanPeer('对方已离开，连接结束');return;}
   if(packet.kind==='setup'&&lan.role==='guest'&&lan.phase!=='playing'&&
-    Number.isSafeInteger(packet.revision)&&packet.revision>=lan.revision&&lanStageValid(packet.mode,packet.stage)&&lanModelValid(packet.aircraft)&&validDuelKit(packet.kit)) {
+    Number.isSafeInteger(packet.revision)&&packet.revision>=lan.revision&&lanStageValid(packet.mode,packet.stage)&&lanModelValid(packet.aircraft)&&validCombatKit(packet.kit)) {
     const changed=packet.revision!==lan.revision;
     Object.assign(lan,{revision:packet.revision,mode:packet.mode,stage:packet.stage,
       remoteAircraft:packet.aircraft,remoteKit:packet.kit,remoteReady:packet.ready===true});
     if(changed) {lan.localReady=false;sendLanChoice();}
   }
   if(packet.kind==='choice'&&lan.role==='host'&&lan.phase!=='playing'&&
-    packet.revision===lan.revision&&lanModelValid(packet.aircraft)&&validDuelKit(packet.kit)) {
+    packet.revision===lan.revision&&lanModelValid(packet.aircraft)&&validCombatKit(packet.kit)) {
     lan.remoteAircraft=packet.aircraft;
     lan.remoteKit=packet.kit;
     lan.remoteReady=packet.ready===true;
@@ -3538,7 +3570,7 @@ function applyLanPacket(packet) {
   if(!lan.connected) return;
   if(packet.kind==='start'&&lan.role==='guest'&&lan.phase==='room'&&
     Number.isSafeInteger(packet.round)&&packet.round>lan.round&&packet.revision===lan.revision&&
-    lanModelValid(packet.hostAircraft)&&lanModelValid(packet.guestAircraft)&&validDuelKit(packet.hostKit)&&validDuelKit(packet.guestKit)) {
+    lanModelValid(packet.hostAircraft)&&lanModelValid(packet.guestAircraft)&&validCombatKit(packet.hostKit)&&validCombatKit(packet.guestKit)) {
     // The host's start packet resolves any simultaneous cancellation or aircraft change.
     lan.localAircraft=packet.guestAircraft;
     lan.remoteAircraft=packet.hostAircraft;
@@ -3903,24 +3935,30 @@ function showOnlineRoomCode(invite=false) {
   if(invite) field.select();
 }
 
-function showDuelLoadout() {
-  if(lan.mode!=='pvp'||lan.phase!=='room') return;
-  if(lan.localReady) toggleLanReady();
+function showCombatLoadout() {
+  const solo=entryScreen==='hangar'&&hangarReturn!=='lan';
+  if(!solo&&lan.phase!=='room') return;
+  const duel=!solo&&lan.mode==='pvp';
+  const current=solo?soloCombatKit:lan.localKit;
+  if(!solo&&lan.localReady) toggleLanReady();
   lan.dialog?.close();
   const dialog=document.createElement('dialog'), form=document.createElement('form');
   Object.assign(dialog.style,{width:'min(390px, 92vw)',background:colors.ink,color:colors.cream,
     border:'2px solid '+colors.haze,padding:'16px',font:'14px '+chineseFont});
   const heading=document.createElement('h2'), summary=document.createElement('p');
-  heading.textContent='对抗武装';
-  summary.textContent='普通导弹随所选机型配备。再选一种特殊弹和一个配件。';
+  heading.textContent=duel?'对抗武装':'任务武装';
+  summary.textContent='K 发射普通导弹，X 发射所选特殊弹。触屏可点「特殊」。';
   form.append(heading,summary);
-  const selectors=[['特殊弹',duelWeapons],['机体配件',duelParts]].map(([title,items],slot)=>{
+  const selectors=[['特殊弹',specialWeapons],['机体配件',equipmentParts]].map(([title,items],slot)=>{
     const label=document.createElement('label'), select=document.createElement('select');
     label.textContent=title;
     Object.assign(select.style,{display:'block',width:'100%',margin:'6px 0 16px',padding:'8px',
       color:colors.cream,background:colors.black,border:'1px solid '+colors.haze});
-    items.forEach((item,index)=>select.add(new Option(item.name+' · '+item.description,String(index))));
-    select.value=String(lan.localKit[slot]);
+    items.forEach((item,index)=>{
+      const description=!duel&&item.hull?'护盾优先承受更多来袭伤害':item.description;
+      select.add(new Option(item.name+' · '+description,String(index)));
+    });
+    select.value=String(current[slot]);
     label.append(select);form.append(label);
     return select;
   });
@@ -3930,9 +3968,12 @@ function showDuelLoadout() {
   form.addEventListener('submit',event=>{
     event.preventDefault();
     const kit=selectors.map(select=>Number(select.value));
-    if(lan.connected&&lan.mode==='pvp'&&lan.phase==='room'&&validDuelKit(kit)&&kit.some((value,i)=>value!==lan.localKit[i])) {
-      lan.localKit=kit;lan.localReady=false;
-      if(lan.role==='host') sendLanSetup();else sendLanChoice();
+    if(validCombatKit(kit)) {
+      if(solo) soloCombatKit=kit;
+      else if(lan.connected&&lan.phase==='room'&&kit.some((value,i)=>value!==lan.localKit[i])) {
+        lan.localKit=kit;lan.localReady=false;
+        if(lan.role==='host') sendLanSetup();else sendLanChoice();
+      }
     }
     dialog.close();
   });
@@ -3965,13 +4006,17 @@ function drawLanRoom() {
     if(lan.role==='host'&&lanStages[lan.mode].length>1) {
       canvasButton('lanMap',missions[lan.stage].name+'  ·  换场地',buttonX,top+84,innerWidth,22,false,10);
     } else if(lan.mode==='pvp') {
-      canvasButton('duelLoadout',duelWeapons[lan.localKit[0]].name+' · 配装',buttonX,top+84,innerWidth,22,false,10);
+      canvasButton('duelLoadout',specialWeapons[lan.localKit[0]].name+' · 配装',buttonX,top+84,innerWidth,22,false,10);
     } else type(missions[lan.stage].name,center,top+101,11,colors.gold,'mono','center');
     type('本机  '+aircraftModels[lan.localAircraft].name+' · '+(lan.localReady?'已准备':'未准备'),
       buttonX,top+123,thin?9:10,colors.cream);
     type('对方  '+aircraftModels[lan.remoteAircraft].name+' · '+(lan.remoteReady?'已准备':'未准备'),
       buttonX,top+140,thin?9:10,colors.cream);
-    canvasButton('lanAircraft','机库选机',buttonX,top+151,half,23,false,11);
+    if(lan.mode==='pve') {
+      const third=Math.floor((half-4)/2);
+      canvasButton('lanAircraft','机库',buttonX,top+151,third,23,false,9);
+      canvasButton('duelLoadout','武装',buttonX+third+4,top+151,half-third-4,23,false,9);
+    } else canvasButton('lanAircraft','机库选机',buttonX,top+151,half,23,false,11);
     canvasButton('lanReady',lan.localReady?'取消准备':'准备',second,top+151,half,23,!lan.localReady,11);
     if(lan.role==='host'&&lan.localReady&&lan.remoteReady)
       canvasButton('lanStart','确认出击',buttonX,top+181,innerWidth,23,true,11);
@@ -4033,7 +4078,7 @@ function handleLanRoomPointer(point) {
   else if(hit('lanRelay')) showLanRelaySettings();
   else if(hit('lanPve')) setLanMode('pve');
   else if(hit('lanPvp')) setLanMode('pvp');
-  else if(hit('duelLoadout')) showDuelLoadout();
+  else if(hit('duelLoadout')) showCombatLoadout();
   else if(hit('lanMap')) {
     const choices=lanStages[lan.mode];
     setLanRoomRules(lan.mode,choices[(choices.indexOf(lan.stage)+1)%choices.length]);
@@ -4093,11 +4138,12 @@ function lanSpawnSeat(state,mode,role) {
   state.agl=state.position[1]-Math.max(0,solidHeight(state.position[0],state.position[2]));
   return state;
 }
-function configureDuelSeat(seat,kit) {
-  const [index,partIndex]=validDuelKit(kit)?kit:defaultDuelKit;
-  const part=duelParts[partIndex];
-  const maxIntegrity=240+(part.hull??0);
-  Object.assign(seat,{duelPart:part,special:{index},specialAmmo:duelWeapons[index].ammo,specialTime:0,
+function configureCombatSeat(seat,kit,duel=false) {
+  const [index,partIndex]=validCombatKit(kit)?kit:defaultCombatKit;
+  const part=equipmentParts[partIndex];
+  const maxIntegrity=duel?240+(part.hull??0):100;
+  const loadoutPart=!duel&&part.hull?{...part,campaignAbsorb:.72}:part;
+  Object.assign(seat,{combatKit:[index,partIndex],loadoutPart,special:{index},specialAmmo:specialWeapons[index].ammo,specialTime:0,
     maxIntegrity,integrity:maxIntegrity,decoyCap:seat.decoys+(part.decoys??0)});
   seat.decoys=seat.decoyCap;
 }
@@ -4127,9 +4173,9 @@ function startLanMatch(config) {
     aircraft=lanSpawnSeat(spawn(),config.mode,otherRole);
     resetMission();
   });
+  configureCombatSeat(mission,config.localKit,match.mode==='pvp');
+  configureCombatSeat(match.peerMission,config.remoteKit,match.mode==='pvp');
   if(match.mode==='pvp') {
-    configureDuelSeat(mission,config.localKit);
-    configureDuelSeat(match.peerMission,config.remoteKit);
     match.duelDecoys=[mission.decoys,match.peerMission.decoys];
     const duel={...mission.config,name:'湖区对决',skill:0};
     mission.config=match.peerMission.config=duel;
@@ -4204,7 +4250,7 @@ function updateLanPeer(dt,match) {
     for(const action of match.peerActions.splice(0)) {
       if(action.action==='pulse') firePulse();
       if(action.action==='tracer') fireTracer();
-      if(action.action==='special') fireDuelSpecial();
+      if(action.action==='special') fireSpecialWeapon();
       if(action.action==='decoy') dropDecoy();
       if(action.action==='cycle') cycleTarget(true);
       if(action.action==='select'&&mission.targets[action.index]?.health)
@@ -4488,6 +4534,7 @@ function launch() {
   chase=false;viewBlend=viewFrom=0;viewElapsed=.35;
   resetFlight();startAudio();
   resetMission();
+  if(selectedMission) configureCombatSeat(mission,soloCombatKit);
   resetWingman();
   saveCheckpoint();
 }
@@ -4603,6 +4650,7 @@ function handleEntryKey(code) {
   }
 }
 addEventListener('keydown',event=>{
+  if(handleSoloCreditsKey(event)) return;
   if(!flying&&entryScreen==='lan') {if(handleLanRoomKey(event)) event.preventDefault();return;}
   if(event.metaKey || !flightKeys.has(event.code)&&!actionKeys.has(event.code)) return;
   if(event.ctrlKey&&!flying&&!event.code.startsWith('Control')) return;
@@ -4623,7 +4671,7 @@ addEventListener('keydown',event=>{
   if(flying&&!paused && event.code==='KeyL' && !lanInputAction('decoy')) dropDecoy();
   if(flying&&!paused && event.code==='KeyJ' && !lanInputAction('pulse')) firePulse();
   if(flying&&!paused && event.code==='KeyK' && !lanInputAction('tracer')) fireTracer();
-  if(flying&&!paused && event.code==='KeyX' && mission?.special && !lanInputAction('special')) fireDuelSpecial();
+  if(flying&&!paused && event.code==='KeyX' && mission?.special && !lanInputAction('special')) fireSpecialWeapon();
   if(flying&&!paused && event.code==='KeyB') deliverBeacon();
 });
 addEventListener('keyup',event=>keys.delete(event.code));
@@ -4647,9 +4695,11 @@ function throttleAt(y) {
 glass.addEventListener('pointerdown',event=>{
   if(event.button!==0) return;
   const p=pointer(event);
+  if(handleSoloCreditsPointer(p)) return;
   if(entryScreen==='hangar'&&!flying) {
     if(inside(p,hitBoxes.closeHangar)) closeHangar();
     else if(inside(p,hitBoxes.confirmSortie)) launch();
+    else if(inside(p,hitBoxes.soloLoadout)) showCombatLoadout();
     else if(inside(p,hitBoxes.wingmanOption)) wingmanEnabled=!wingmanEnabled;
     else {
       const choice=hitBoxes.aircraftChoices?.find(entry=>inside(p,entry.slot));
@@ -4687,11 +4737,12 @@ glass.addEventListener('pointerdown',event=>{
   if(paused) return;
   if(inside(p,hitBoxes.wingmanCommand)) {cycleWingmanCommand();return;}
   if(inside(p,hitBoxes.nextChapter)) {openNextChapter();return;}
+  if(inside(p,hitBoxes.creditsReplay)) {beginSoloCredits();return;}
   if(inside(p,hitBoxes.beaconDrop)) {deliverBeacon();return;}
   if(selectRadarContact(p)) return;
   if(inside(p,hitBoxes.cycleTarget)) {if(!lanInputAction('cycle')) cycleTarget(true);return;}
   if(inside(p,hitBoxes.decoy)) {if(!lanInputAction('decoy')) dropDecoy();return;}
-  if(inside(p,hitBoxes.duelSpecial)) {if(!lanInputAction('special')) fireDuelSpecial();return;}
+  if(inside(p,hitBoxes.duelSpecial)) {if(!lanInputAction('special')) fireSpecialWeapon();return;}
   if(inside(p,hitBoxes.pulse) || inside(p,hitBoxes.tracer)) {
     const action=inside(p,hitBoxes.pulse)?'pulse':'tracer';
     combatPointers.set(action,event.pointerId);
@@ -4769,6 +4820,166 @@ function resize() {
 }
 let last=performance.now(), average=16.67, pressure=0, headroom=0, audioTime=0;
 const origin=last;
+// Solo radio follows the campaign state. The debrief starts only after the final exchange.
+const soloStoryScript=[null,
+  {
+    waves:[
+      [['暮湾台','巡航一号，旧引航台失联。听到回呼请记录频段。'],['巡航一号','收到。有一盏灯还在闪，先去看看。']],
+      [['暮湾台','谷口两段呼叫完全相同。有人在用我们的旧录音。'],['巡航一号','我看见中继车了。先切断伪造信号。']]
+    ],
+    clear:[['暮湾台','中继停机了。南岸仍有一座村台在呼叫。'],['巡航一号','把坐标给我。下一架飞机带上信标。']]
+  },
+  {
+    waves:[
+      [['南岸村台','我们还有一盏灯，等救援的机组能看见它吗？'],['巡航一号','我带了引航信标，马上接通南岸。']],
+      [['南岸村台','湖对面回话了。还差北岸最后一段。'],['巡航一号','北岸交给我。请把村里的灯留着。']]
+    ],
+    clear:[['暮湾台','南北岸都收到信标了。两条航线已接通。'],['巡航一号','让救援机编队出发。我去查那串回声。']]
+  },
+  {
+    waves:[
+      [['暮湾台','有人在镜谷复制引航信号，地面中继正在移动。'],['巡航一号','我来追踪移动中继。救援队先走备用频段。']],
+      [['暮湾台','确认是伪造回呼。两路干扰正在压住村台。'],['巡航一号','收到，村台保持静默，我来处理。']]
+    ],
+    clear:[['暮湾台','真实的回呼对上了。信号都从雾脊另一侧发来。'],['巡航一号','那就从雾脊替他们找一条出路。']]
+  },
+  {
+    waves:[
+      [['暮湾台','雾盖住了主航路。前方两个断点需要重新点灯。'],['巡航一号','收到。先送第一枚信标过来。']],
+      [['救援领航','看见山前灯了。出口还在雾里，我们等你。'],['巡航一号','出口是第二站。看到灯再跟上。']]
+    ],
+    clear:[['救援领航','两盏灯都看见了。最后一批机组开始撤离。'],['巡航一号','保持联络。我在北岭接你们。']]
+  },
+  {
+    waves:[
+      [['救援领航','我们到北岭了，返航通道还有敌方中继。'],['巡航一号','你们沿灯走。我会清出山口。']],
+      [['暮湾台','山后还有一队重型敌机。救援编队已进入山谷。'],['巡航一号','收到。让他们保持往前。']],
+      [['救援领航','最后一架已经过了山口。云上有个巨大的影子。'],['巡航一号','我也看见了。先送你们安全回家。']]
+    ],
+    clear:[['暮湾台','全部机组已脱离北岭。确认云上目标代号云脊。'],['巡航一号','我去云海。别让湖边那盏灯熄了。']]
+  },
+  {
+    waves:[
+      [['暮湾台','云海防线上有苏系先遣机，云脊还在高处。'],['巡航一号','收到。我会守住湖区入口。']],
+      [['暮湾台','第二批是美系编队。北岭的救援机还在返航。'],['巡航一号','我会留在它们和湖区之间。']],
+      [['暮湾台','两批敌机汇合了。我们还能收到南岸信标。'],['巡航一号','听得到南岸。继续给后方报平安。']],
+      [['暮湾台','电子战机进入云海，村台的回呼开始断续。'],['巡航一号','收到最后一段。暮湾台，等我回来。']],
+      [['南岸村台','这里是南岸，听见你了。湖岸的灯都还亮着。'],['巡航一号','收到。最后一批编队由我处理。']],
+      [['暮湾台','云层打开了。前方目标是空天母舰云脊。'],['巡航一号','看到了。结束后，我们一起回家。']]
+    ],
+    clear:[['暮湾台','确认云脊离开航线。全体机组已经平安返航。'],['巡航一号','暮湾台，任务结束。请把湖边的灯再留一晚。']]
+  }
+];
+const soloSignalDialogue=[['暮湾台','信标已接通，收到了清晰的回呼。']];
+const soloRadioLineLength=2.3;
+let soloStoryState=null, soloCredits=null;
+const isSoloFinale=config=>config?.chapter===6&&config.coop;
+
+function drawSoloStory(now) {
+  if(!flying||lanMatch||!mission?.campaign||soloCredits) {soloStoryState=null;return;}
+  const script=soloStoryScript[mission.config.chapter];
+  if(!script) {soloStoryState=null;return;}
+  const {wave,delivered=0}=mission.campaign;
+  const old=soloStoryState;
+  if(old?.mission!==mission||old.wave!==wave||old.complete!==mission.complete||old.delivered!==delivered) {
+    const newSignal=old?.mission===mission&&old.wave===wave&&old.delivered<delivered;
+    const lines=mission.complete?script.clear:newSignal?soloSignalDialogue:script.waves[wave];
+    soloStoryState={mission,wave,delivered,complete:mission.complete,lines:lines||[],at:simulationTime};
+  }
+  if(paused||mission.creditsSeen&&mission.complete) return;
+  const {lines,at}=soloStoryState;
+  const index=Math.floor((simulationTime-at)/soloRadioLineLength);
+  if(index>=lines.length) {
+    if(mission.complete&&isSoloFinale(mission.config)) beginSoloCredits(now);
+    return;
+  }
+  const [speaker,message]=lines[index];
+  const w=Math.min(288,width-screenInsets[1]-screenInsets[3]-24);
+  const x=Math.round((width+screenInsets[3]-screenInsets[1]-w)/2);
+  const columns=Math.max(8,Math.floor((w-16)/9)), rows=[];
+  for(let start=0;start<message.length;start+=columns) rows.push(message.slice(start,start+columns));
+  const h=22+rows.length*12, y=Math.min(Math.floor(height*.64),height-screenInsets[2]-91-h);
+  rect(x,y,w,h,colors.ink);
+  corners(x,y,w-1,h-1,6,colors.gold);
+  type(speaker,x+8,y+13,9,colors.gold,'display');
+  rows.forEach((row,j)=>type(row,x+8,y+26+j*12,9,colors.cream));
+}
+
+const soloCreditsSections=[
+  ['创作与制作',['Laser / Laser1209','PATROL 游戏项目']],
+  ['玩法灵感',['《皇牌空战 7》与《皇牌空战 8》','万代南梦宫娱乐与开发团队']],
+  ['字体与发行',['Press Start 2P','CodeMan38 与字体贡献者','Space Mono · Colophon Foundry','Noto Sans SC · Noto CJK 项目','Google Fonts 字体发行']],
+  ['浏览器与开放标准',['HTML · Canvas · JavaScript','WebGL · Khronos Group','Web Audio · Web Workers','WebRTC · WebSocket · TURN','标准作者与各浏览器开发者']],
+  ['在线基础设施',['Cloudflare Workers 与 Durable Objects','Cloudflare Realtime TURN','GitHub 代码托管']],
+  ['开发与测试工具',['OpenAI Codex','Node.js · Playwright · Miniflare','Google Chrome 与 Microsoft Edge']],
+  ['特别感谢',['参与试飞的玩家','体验联机并反馈问题的朋友','陪暮湾的机组们飞到这里的你']]
+];
+function beginSoloCredits(now=performance.now()) {
+  if(soloCredits||!flying||lanMatch||!mission?.complete||!isSoloFinale(mission.config)) return false;
+  soloCredits={last:now,travel:0,finished:false};
+  paused=true;
+  keys.clear();combatPointers.clear();drag=null;throttlePointer=null;
+  sound(aircraft);
+  return true;
+}
+function drawSoloCredits(now) {
+  if(!soloCredits) return false;
+  const credits=soloCredits;
+  const elapsed=clamp((now-credits.last)/1000,0,.1);
+  credits.last=now;
+  const rows=[{offset:0,label:'PATROL',size:20,tint:colors.cream,mode:'display'},
+    {offset:23,label:'暮湾航线 · 致谢',size:10,tint:colors.gold,mode:'mono'}];
+  const inkWidth=width-screenInsets[1]-screenInsets[3];
+  let row=61;
+  for(const [section,lines] of soloCreditsSections) {
+    rows.push({offset:row,label:section,size:11,tint:colors.gold,mode:'display'});
+    row+=17;
+    for(const label of lines) {
+      rows.push({offset:row,label,size:inkWidth<220?8:9,tint:colors.cream,mode:'mono'});
+      row+=14;
+    }
+    row+=19;
+  }
+  rows.push({offset:row+14,label:'Laser敬献',size:20,tint:colors.gold,mode:'display'});
+  const stop=height-screenInsets[2]-46+row+14-height*.5;
+  if(!credits.finished) {
+    credits.travel=Math.min(stop,credits.travel+elapsed*29);
+    if(credits.travel>=stop) credits.finished=true;
+  }
+  const focusX=Math.round((width+screenInsets[3]-screenInsets[1])/2);
+  const start=height-screenInsets[2]-46-(credits.finished?stop:credits.travel);
+  rect(0,0,width,height,colors.ink);
+  const inset=10, edge=height-screenInsets[2]-38;
+  corners(inset,inset,width-inset*2-1,height-inset*2-1,10,colors.haze);
+  for(const {offset,label,size,tint,mode} of rows) {
+    const y=Math.round(start+offset);
+    if(y>=screenInsets[0]+size+8&&y<edge) type(label,focusX,y,size,tint,mode,'center');
+  }
+  const buttonWidth=Math.min(104,inkWidth-24);
+  canvasButton('creditsAction',credits.finished?'返回标题':'跳至末尾',Math.round(focusX-buttonWidth/2),
+    height-screenInsets[2]-31,buttonWidth,18,credits.finished,9);
+  return true;
+}
+function advanceSoloCredits() {
+  if(!soloCredits.finished) {soloCredits.finished=true;return;}
+  soloCredits=null;
+  mission.creditsSeen=true;
+  returnToTitle();
+}
+function handleSoloCreditsKey(event) {
+  if(!soloCredits) return false;
+  if(event.code==='Enter'||event.code==='Escape'||event.code==='Space') {
+    event.preventDefault();
+    if(!event.repeat) advanceSoloCredits();
+  }
+  return true;
+}
+function handleSoloCreditsPointer(point) {
+  if(!soloCredits) return false;
+  if(inside(point,hitBoxes.creditsAction)) advanceSoloCredits();
+  return true;
+}
+
 function draw(now) {
   requestAnimationFrame(draw);
   const elapsed=clamp((now-last)/1000,0,.1), realTime=(now-origin)/1000;
@@ -4787,6 +4998,7 @@ function draw(now) {
   if(resizePending) resize();
   ctx.clearRect(0,0,width,height);
   hitBoxes={};
+  if(drawSoloCredits(now)) return;
   if(!renderWorld) rect(0,0,width,height,colors.violet);
   if(!flying) {
     if(entryScreen==='hangar') {hangarScreen(realTime);return;}
@@ -4835,6 +5047,7 @@ function draw(now) {
   drawDamageCue();
   if(!lanMatch) tutorialHud(s);
   if(touch) touchHud(s);
+  if(!lanMatch) drawSoloStory(now);
   const pauseWidth=touch?30:43;
   canvasButton('pause',lanMatch?'菜单':paused?'继续':'暂停',width-screenInsets[1]-pauseWidth-10,screenInsets[0]+8,pauseWidth,18,false,10);
   if(lanMatch) drawLanOverlay();

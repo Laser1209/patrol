@@ -25,7 +25,7 @@
 ## 你可以怎么飞
 
 - **自由飞行** — 在晴空、低云和薄暮之间换一条航线。掠水、爬升、倒飞，或只是沿着秋日的山谷巡航。俯冲能积累速度，拉升会消耗能量，轻擦水面会溅起一串像素水花。
-- **暮湾航线** — 从引航台失联开始，穿过五章逐步展开的任务。雷达上有巡航与截击无人机、移动中继车和干扰机。两章允许驾驶大型机，投送引航信标，接通撤离航线。
+- **暮湾航线** — 从引航台失联飞到云海防线，六章串起信标救援、敌机拦截和空天母舰决战。无线电对话会随章节、敌机波次和信标进度推进。终章完成后播放滚动致谢。
 - **机库** — 出击前从 13 款机体中挑选。苏-27、米格-21、F-16、歼-20、B-52、图-95、轰-6 等机型各有独立外形与飞行手感。可以拖动查看机体，也可以切到顶视、侧视和正视。
 - **电脑僚机** — 机库可开关僚机。在空中指挥它保持编队、协同交战或返队。驾驶大型机出击时，僚机会默认护航，雷达上可以随时找到它。
 - **双人联机** — 在联合闯关里迎战五波敌机，最后挑战空天母舰。也可以到南岸打一场 150 秒的空中对决，搭配特殊弹和机体配件。
@@ -48,6 +48,7 @@
 | `Shift` / `Ctrl` | 增减油门 |
 | `C` | 切换座舱与追尾视角 |
 | `J` · `K` · `L` · `T` | 机炮 · 导弹 · 热诱弹 · 切换锁定 |
+| `X` | 发射所选特殊弹 |
 | `U` | 切换僚机指令 |
 | `B` | 在指定任务中投送信标 |
 | `P` · `R` | 打开菜单 · 单机重开本关 |
@@ -70,7 +71,7 @@
 
 合作模式共享任务进度和积分，队友掉线时可由电脑僚机接替。对抗模式是南岸空域的 1 对 1。联机菜单只在本机打开，联机对局也不会覆盖单机存档。
 
-- **联合闯关**依次迎战苏系、美系、混合编队、电子战机与苏系护航、全系混编，最后挑战空天母舰。原有演习仍可在房间中切换。
+- **联合闯关**依次迎战苏系、美系、混合编队、电子战机与苏系护航、全系混编，最后挑战空天母舰。出击前可装备特殊弹和配件，4AAM／8AAM 会在锁定范围内分配给多个目标。原有演习仍可在房间中切换。
 - **对抗武装**可在 PvP 准备前选择 4AAM、8AAM 或远程单发弹，再装一个配件。`K` 发射普通导弹，`X` 发射特殊弹，触屏可点「特殊」。限时进度按双方剩余耐久的比例结算。
 
 **同一个热点还是连不上？** 两台设备能上网的话，可以改用 **邀请好友**，游戏会自动尝试备用线路。只有本地网络时，请使用允许设备互通的 Wi‑Fi。
@@ -81,7 +82,7 @@
 
 ## English
 
-**PATROL** is a pixel-art arcade flight game set over an autumn lake country. Fly from the cockpit or the chase camera, explore at your own pace, or follow a five-chapter campaign through changing weather and terrain. Pick from 13 aircraft in the hangar before you take off.
+**PATROL** is a pixel-art arcade flight game set over an autumn lake country. Fly from the cockpit or the chase camera, explore at your own pace, or follow six campaign chapters with radio dialogue and an aerospace-carrier finale. Pick from 13 aircraft in the hangar before you take off.
 
 [Download the HTML file](https://github.com/Laser1209/patrol/raw/refs/heads/main/index.html) and open it in a browser. Choose **新任务** (New Mission), pick a sortie, read the briefing, and choose a plane in the hangar. Select **确认出击** (Take Off) to fly or **继续上次** (Continue) on the title screen to resume a saved solo sortie. Press `U` to cycle wingman orders when the AI wingman is enabled.
 
