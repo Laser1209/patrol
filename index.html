@@ -1014,8 +1014,17 @@ const missions=[
       {line:'清出返航空域',contacts:[['interceptor',3],['convoy',1],['jammer',1]]},
       {line:'迎击压轴编队',contacts:[['guardian',2],['interceptor',3],['lookout',1],['relay',1]]},
       {line:'护送最后一盏灯',contacts:[['guardian',3],['interceptor',3],['jammer',1]]}
-    ]}
+    ]},
+  {name:'云海防线',difficulty:'联合闯关',skill:1,coop:true,waves:[
+    {line:'苏系先锋',contacts:[['su27',2],['mig21',1]]},
+    {line:'美系追击',contacts:[['f15',2],['f16',2]]},
+    {line:'混合编队',contacts:[['su27',2],['f18',2],['j11',1]]},
+    {line:'电子战支援',contacts:[['jammer',1],['su34',2],['su27',2]]},
+    {line:'多系联军',contacts:[['su27',1],['f15',1],['f22',1],['j11',1],['drone',2],['lookout',1]]},
+    {line:'空天母舰 · 云脊',contacts:[['carrier',1],['f22',1],['su34',1]]}
+  ]}
 ];
+const soloMissions=missions.filter(config=>!config.coop);
 // Every sortie starts in a different section of the periodic height field and has its own weather.
 const environments=[
   ['暮湾湖区','17:35','晚霞 · 微风',[0,0],1,0,58,[-.416,.115,.902],[.59,1,1,0],[1.8,0,-.7],0],
@@ -1026,10 +1035,11 @@ const environments=[
   ['南岸信标区','18:05','岸边薄雾',[265,535],.87,7,95,[-.52,.088,.85],[.55,1.46,.73,0],[1.6,0,-1.2],.6],
   ['镜谷山口','15:55','阵雨 · 侧风',[110,1270],1.34,-3,132,[-.26,.19,.95],[.43,2.25,.56,2],[5.5,0,2.8],2.1],
   ['雾脊航线','18:22','低云 · 阵风',[-140,1770],1.49,-10,151,[-.46,.081,.88],[.45,2.6,.51,2],[-3.9,0,3.2],1.5],
-  ['北岭归航区','19:05','夜色 · 山雾',[-445,2310],1.53,-8,137,[-.37,.021,.93],[.52,1.75,.38,3],[-2.4,0,-1.9],1]
+  ['北岭归航区','19:05','夜色 · 山雾',[-445,2310],1.53,-8,137,[-.37,.021,.93],[.52,1.75,.38,3],[-2.4,0,-1.9],1],
+  ['云海防线','18:20','暮云 · 海湾微风',[290,370],.81,8,95,[-.49,.13,.86],[.55,1.25,.84,1],[1.4,0,1.1],.2]
 ].map(([area,clock,condition,offset,relief,waterline,clearance,sun,weather,wind,gust],index)=>
   ({area,clock,condition,offset,relief,waterline,clearance,sun:unit(sun),weather,wind,gust,
-    cloudHeight:[410,520,390,275,420,335,290,230,355][index],rain:index===6}));
+    cloudHeight:[410,520,390,275,420,335,290,230,355,460][index],rain:index===6}));
 let activeEnvironment=0;
 const flightEnvironment=()=>environments[activeEnvironment];
 function routePoint(x,y,z) {
@@ -1041,13 +1051,18 @@ function airContact(x,y,z) {
   position[1]=Math.max(y,solidHeight(position[0],position[2])+31);
   return position;
 }
-const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'干扰机',
-  interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点',rival:'对手机'};
+const targetNames={drone:'无人机',ground:'地面靶',lookout:'预警机',jammer:'电子战机',
+  interceptor:'截击无人机',guardian:'重型无人机',convoy:'移动中继车',relay:'山地中继站',beacon:'信标投送点',rival:'对手机',
+  su27:'苏-27',su34:'苏-34',mig21:'米格-21',f15:'F-15',f16:'F-16',f18:'F-18',f22:'F-22',j11:'歼-11',carrier:'云脊空天母舰'};
+const coopFighters={su27:0,su34:1,mig21:2,f15:3,f16:4,f18:5,f22:6,j11:7};
 const targetProfiles={
   drone:{air:true,health:17},interceptor:{air:true,health:24,skill:2},
   guardian:{air:true,health:33,skill:1},
   lookout:{air:true,health:24},jammer:{air:true,health:23},
-  ground:{health:19},convoy:{health:18},relay:{health:20},beacon:{health:1},rival:{air:true}
+  ground:{health:19},convoy:{health:18},relay:{health:20},beacon:{health:1},rival:{air:true},
+  su27:{air:true,health:41,skill:1},su34:{air:true,health:48,skill:1},mig21:{air:true,health:28,skill:0},
+  f15:{air:true,health:42,skill:1},f16:{air:true,health:34,skill:1},f18:{air:true,health:40,skill:1},
+  f22:{air:true,health:52,skill:2},j11:{air:true,health:43,skill:1},carrier:{air:true,health:235,skill:0}
 };
 const isAirContact=target=>Boolean(targetProfiles[target.kind]?.air);
 const isHostileContact=target=>target.kind!=='beacon';
@@ -1067,7 +1082,7 @@ function fitAircraftToMission() {
 }
 function changeMission(direction) {
   if(ready&&!flying) {
-    selectedMission=wrap(selectedMission+direction,missions.length);
+    selectedMission=wrap(selectedMission+direction,soloMissions.length);
     fitAircraftToMission();
   }
 }
@@ -1114,7 +1129,12 @@ function spawnCampaignWave() {
     const profile=targetProfiles[kind];
     const advance=wave*265, center=aircraft.position;
     let position;
-    if(profile.air) {
+    if(config.coop) {
+      const slot=airIndex++, heading=radarHeading(aircraft), side=[heading[2],0,-heading[0]];
+      const distance=kind==='carrier'?575:275+Math.floor(slot/3)*75;
+      position=add(add(center,mul(heading,distance)),mul(side,kind==='carrier'?0:(slot%3-1)*83));
+      position[1]=Math.max(center[1]+(kind==='carrier'?64:(slot%3-1)*16),solidHeight(position[0],position[2])+45);
+    } else if(profile.air) {
       const slot=airIndex++;
       const spread=kind==='guardian'?95:67;
       const [x,,routeZ]=routePoint(2140+(slot%4-1.5)*spread,0,555+advance);
@@ -1212,19 +1232,19 @@ function resetArmament() {
   Object.assign(mission,{tracers,decoys,missileReserve:tracers*11,missileReload:0,pulseTime:0,tracerTime:0,muzzleTime:0,launchTime:0,
     warningTime:5,charge:0,manualLockTime:0,lockLostTime:0,incoming:null,effects:[]});
 }
-const missileReloadDelay=kit=>2.55+kit.lockTime*.9;
+const missileReloadDelay=(kit,multiplier=1)=>(2.55+kit.lockTime*.9)*multiplier;
 function updateMissileRack(dt) {
   const kit=selectedLoadout();
   if(mission.tracers>=kit.tracers || !mission.missileReserve) {
     mission.missileReload=0;
     return;
   }
-  if(mission.missileReload<=0) mission.missileReload=missileReloadDelay(kit);
+  if(mission.missileReload<=0) mission.missileReload=missileReloadDelay(kit,mission.duelPart?.reload);
   mission.missileReload=Math.max(0,mission.missileReload-dt);
   if(mission.missileReload===0) {
     mission.tracers++;
     mission.missileReserve--;
-    if(mission.tracers<kit.tracers&&mission.missileReserve) mission.missileReload=missileReloadDelay(kit);
+    if(mission.tracers<kit.tracers&&mission.missileReserve) mission.missileReload=missileReloadDelay(kit,mission.duelPart?.reload);
   }
 }
 const supportActive=kind=>mission.targets.some(target=>target.kind===kind&&target.health>0);
@@ -1334,7 +1354,7 @@ function dropDecoy() {
   if(!mission || mission.recoveryTime>0 || mission.decoys<=0) return;
   mission.decoys--;
   playCue('decoy');
-  if(mission.incoming) {
+  if(mission.incoming && mission.incoming.weapon!=='cannon') {
     createBurst(incomingPoint(mission.incoming,aircraft),false);
     mission.incoming=null;mission.warningTime=3.8;
     notifyMission('诱饵已引开追踪');
@@ -1360,7 +1380,7 @@ function scoreHit(target,damage,missile=false) {
   } else if(target.health===0) createBurst(target.position,false);
   else mission.effects.push({position:target.position.slice(),life:.18,kind:'spark'});
   if(target.health===0) {
-    mission.points+=target.kind==='drone'?100:150;
+    mission.points+=target.kind==='carrier'?750:target.kind==='drone'?100:150;
     notifyMission((missile?'导弹命中 · ':'')+targetNames[target.kind]+'已清除');
     if(target===mission.locked) cycleTarget();
     const clear=mission.targets.every(candidate=>!candidate.health);
@@ -1404,7 +1424,7 @@ function fireTracer() {
     return;
   }
   mission.tracers--;
-  if(mission.missileReserve&&mission.missileReload<=0) mission.missileReload=missileReloadDelay(selectedLoadout());
+  if(mission.missileReserve&&mission.missileReload<=0) mission.missileReload=missileReloadDelay(selectedLoadout(),mission.duelPart?.reload);
   playCue('tracer');
   notifyMission('导弹发射 · 待发 '+mission.tracers+' 枚');
   mission.tracerTime=.64+mission.lockTime*.35;
@@ -1416,6 +1436,27 @@ function fireTracer() {
   effect.position=effect.origin;
   mission.effects.push(effect);
 }
+function fireDuelSpecial() {
+  if(!mission?.special || mission.recoveryTime || mission.specialTime>0 || lanMatch?.result) return;
+  const weapon=duelWeapons[mission.special.index], target=mission.locked;
+  if(!mission.specialAmmo) {notifyMission('特殊弹已用尽');return;}
+  const nose=rotate(aircraft.attitude,[0,0,1]);
+  if(!target || mission.charge<1 || !trackable(target,nose,weapon.lock) || targetRange(target)>weapon.range) {
+    notifyMission('特殊弹 · 等待有效锁定');return;
+  }
+  mission.specialAmmo--;
+  mission.specialTime=weapon.cooldown*(mission.duelPart.cooldown??1);
+  mission.launchTime=.45;
+  for(let index=0;index<weapon.shots;index++) {
+    const spread=index-(weapon.shots-1)/2;
+    const origin=add(aircraft.position,rotate(aircraft.attitude,[spread*1.25,-.55,.75]));
+    const duration=.85+Math.abs(spread)*.09+index*.035;
+    mission.effects.push({origin,position:origin,target,duration,life:duration,arc:6+index*3,
+      kind:'tracer',damage:weapon.damage,volley:simulationTime,glow:colors.mist});
+  }
+  playCue('tracer');
+  notifyMission(weapon.name+' · 发射 '+weapon.shots+' 枚');
+}
 function projectilePoint(effect,progress) {
   const t=clamp(progress,0,1);
   const position=blend(effect.origin,effect.target.position,smooth(t));
@@ -1424,21 +1465,41 @@ function projectilePoint(effect,progress) {
 }
 const flightPatterns={
   drone:[.51,21,8],interceptor:[.81,46,17],guardian:[.29,28,8],
-  lookout:[.34,35,6],jammer:[.34,35,6]
+  lookout:[.34,35,6],jammer:[.34,35,6],carrier:[.09,26,4],
+  su27:[.43,35,10],su34:[.32,37,8],mig21:[.48,28,12],f15:[.48,38,10],f16:[.56,30,15],
+  f18:[.39,34,14],f22:[.60,38,18],j11:[.41,37,12]
 };
+function scheduleCoopAttack(dt) {
+  const rangeLimit=supportActive('lookout')?540:460;
+  mission.warningTime=Math.max(0,mission.warningTime-dt);
+  if(mission.warningTime>0) return;
+  let source=null, distance=rangeLimit;
+  for(const contact of mission.targets) {
+    if(!contact.health || !isAirContact(contact) || ['lookout','jammer'].includes(contact.kind)) continue;
+    const range=targetRange(contact);
+    if(range>=distance || !clearSight(contact.position,aircraft.position)) continue;
+    source=contact;distance=range;
+  }
+  if(!source) return;
+  const weapon=distance<145?'cannon':'missile';
+  const duration=weapon==='cannon'?.95:source.kind==='carrier'?2.3:2.8;
+  mission.incoming={origin:source.position.slice(),duration,remaining:duration,evade:0,weapon,
+    damage:weapon==='cannon'?11:source.kind==='carrier'?32:22};
+  playCue('incoming');
+}
 function updateIncomingEvasion(incoming,dt) {
   // The threat is an arcade timer. Use accumulated changes in flight direction to break it.
   const s=aircraft;
   const turning=Math.hypot(s.rates[0],s.rates[2])+
     Math.abs(Math.sin(s.bank))*Math.min(2.4,Math.max(0,s.g))*.15;
   const cover=!clearSight(incomingPoint(incoming,s),s.position);
-  const gain=cover?2.8:turning>.34?(turning-.10)*1.43:-.30;
+  const gain=cover?2.8:turning>.34?(turning-.10)*(incoming.weapon==='cannon'?2.8:1.43):-.30;
   incoming.evade=clamp((incoming.evade||0)+dt*gain,0,1);
   if(incoming.evade<1) return false;
   createBurst(incomingPoint(incoming,s),false);
   mission.incoming=null;
   mission.warningTime=4;
-  notifyMission('规避成功 · 来袭导弹已脱锁');
+  notifyMission(incoming.weapon==='cannon'?'规避成功 · 躲过机炮点射':'规避成功 · 来袭导弹已脱锁');
   playCue('lock');
   return true;
 }
@@ -1447,6 +1508,7 @@ function updateMission(dt,advanceWorld=true) {
   const {config}=mission;
   mission.pulseTime=Math.max(0,mission.pulseTime-dt);
   mission.tracerTime=Math.max(0,mission.tracerTime-dt);
+  if(mission.special) mission.specialTime=Math.max(0,mission.specialTime-dt);
   updateMissileRack(dt);
   mission.muzzleTime=Math.max(0,mission.muzzleTime-dt);
   mission.launchTime=Math.max(0,mission.launchTime-dt);
@@ -1458,7 +1520,8 @@ function updateMission(dt,advanceWorld=true) {
       if(effect.kind==='tracer') effect.position=projectilePoint(effect,1-effect.life/effect.duration);
     } else {
       mission.effects.splice(i,1);
-      if(effect.kind==='tracer' && !effect.deflected && !mission.recoveryTime) scoreHit(effect.target,mission.tracerDamage,true);
+      if(effect.kind==='tracer' && !effect.deflected && !mission.recoveryTime)
+        scoreHit(effect.target,effect.damage??mission.tracerDamage,true);
     }
   }
   if(mission.recoveryTime>0) return;
@@ -1477,7 +1540,8 @@ function updateMission(dt,advanceWorld=true) {
       const z=target.center[2]+Math.sin(wave*.73)*width*.92;
       const y=target.center[1]+Math.sin(wave*(1+skill*.4))*(motion[2]+skill*7)+Math.abs(target.evade)*.29;
       const offset=sub([x,y,z],target.position);
-      if(Math.hypot(offset[0],offset[2])>.015) target.heading=Math.atan2(offset[0],offset[2]);
+      if(target.kind!=='carrier' && Math.hypot(offset[0],offset[2])>.015)
+        target.heading=Math.atan2(offset[0],offset[2]);
       target.position=[x,Math.max(y,solidHeight(x,z)+22),z];
     }
     updateCampaign(dt);
@@ -1495,10 +1559,11 @@ function updateMission(dt,advanceWorld=true) {
     if(incoming.remaining<=0) {
       mission.incoming=null;
       createBurst(aircraft.position,false);
-      damageAircraft(16+config.skill*13,'来袭命中');
+      damageAircraft(incoming.damage??16+config.skill*13,'来袭命中');
       mission.warningTime=3.5-config.skill*.65;
     }
   } else {
+    if(config.coop) {scheduleCoopAttack(dt);return;}
     const radius=supportActive('lookout')?520:340;
     const source=mission.targets.find(target=>target.health>0&&isAirContact(target)&&
       target.kind!=='lookout'&&target.kind!=='jammer'&&targetRange(target)<radius);
@@ -2129,13 +2194,13 @@ function controlsScreen() {
 function missionSelectionScreen() {
   const narrow=width<350, w=Math.min(width-22,405), x=Math.round((width-w)/2);
   const h=Math.min(height-22,296), y=Math.round((height-h)/2), bottom=y+h;
-  const row=Math.min(24,Math.floor((h-98)/missions.length)), listWidth=narrow?w-24:Math.floor(w*.45);
+  const row=Math.min(24,Math.floor((h-98)/soloMissions.length)), listWidth=narrow?w-24:Math.floor(w*.45);
   rect(x,y,w,h,colors.ink);
   corners(x,y,w-1,h-1,10,colors.gold);
   type('新任务',x+13,y+23,15,colors.cream,'display');
   canvasButton('backToTitle','返回',x+w-57,y+9,45,19,false,10);
   type('自由飞行与演习',x+13,y+42,9,colors.gold);
-  hitBoxes.missionChoices=missions.map((config,index)=>{
+  hitBoxes.missionChoices=soloMissions.map((config,index)=>{
     if(index===4) type('暮湾航线',x+13,y+57+index*row,9,colors.gold);
     const slot=[x+12,y+48+index*row+(index>=4?16:0),listWidth,row-2];
     const label=config.chapter?config.chapter+'  '+config.name:config.name;
@@ -2474,10 +2539,52 @@ function environmentHud() {
 const contactColors={
   drone:colors.red,interceptor:colors.ochre,guardian:colors.haze,
   ground:colors.ochre,convoy:colors.peach,relay:colors.gold,beacon:colors.cream,
-  lookout:colors.gold,jammer:colors.peach,rival:colors.red
+  lookout:colors.gold,jammer:colors.peach,rival:colors.red,carrier:colors.gold,
+  su27:colors.red,su34:colors.red,mig21:colors.red,f15:colors.ochre,f16:colors.ochre,
+  f18:colors.ochre,f22:colors.ochre,j11:colors.haze
 };
 function insideView(point,margin=0) {
   return point && point[0]>margin && point[0]<width-margin && point[1]>margin && point[1]<height-margin;
+}
+const coopMeshDistance=420;
+function renderCoopAircraft(cam) {
+  if(!mission?.config.coop) return;
+  const aircraftRender={stick:[0,0],thrust:.34};
+  for(const target of mission.targets) {
+    const model=coopFighters[target.kind];
+    if(!target.health || model===undefined || length(sub(target.position,cam.eye))>=coopMeshDistance ||
+      !insideView(project(target.position,cam),-18) || !clearSight(cam.eye,target.position)) continue;
+    aircraftRender.position=target.position;
+    aircraftRender.attitude=axisAngle([0,1,0],target.heading);
+    renderJet(cam,aircraftRender,simulationTime,1,[0,0],model);
+  }
+}
+function drawCoopCarrier(target,cam) {
+  const at=(x,y,z)=>project(add(target.position,[x,y,z]),cam);
+  const face=(vertices,color)=>{
+    const points=vertices.map(point=>at(...point));
+    if(points.every(Boolean)) polygon(points,color);
+  };
+  const beam=[[-91,0,-22],[-54,0,22],[-20,0,62],[20,0,62],[54,0,22],[91,0,-22],
+    [69,0,-68],[-69,0,-68]];
+  face([beam[0],beam[7],beam[6],beam[5],[45,-17,-57],[-45,-17,-57]],colors.ink);
+  face(beam,colors.slate);
+  face([[-78,1,-24],[-52,1,13],[-26,1,-11],[-34,1,-52]],colors.haze);
+  face([[78,1,-24],[52,1,13],[26,1,-11],[34,1,-52]],colors.haze);
+  face([[-17,2,-61],[-10,2,48],[10,2,48],[17,2,-61]],colors.black);
+  face([[-11,2,-54],[-5,2,41],[5,2,41],[11,2,-54]],colors.peach);
+  face([[-15,0,-17],[-11,20,-25],[11,20,-25],[15,0,-17]],colors.plum);
+  for(const x of [-61,-34,34,61]) {
+    const light=at(x,-4,-64);
+    if(insideView(light)) rect(light[0]-1,light[1]-1,3,2,colors.gold);
+  }
+  const label=at(0,27,0);
+  if(insideView(label,24)) {
+    const [x,y]=label;
+    rect(x-24,y-5,48,4,colors.ink);
+    rect(x-23,y-4,46*clamp(target.health/target.maxHealth,0,1),2,colors.red);
+    type('云脊',x,y-8,8,colors.cream,'mono','center');
+  }
 }
 function drawBurst(effect,cam) {
   const age=1-effect.life/effect.duration;
@@ -2532,6 +2639,8 @@ function drawMissionWorld(cam,effects=mission?.effects) {
     if(!insideView(point) || !clearSight(cam.eye,target.position)) continue;
     const [x,y]=point;
     const distance=length(sub(target.position,cam.eye));
+    if(target.kind==='carrier') {drawCoopCarrier(target,cam);continue;}
+    if(coopFighters[target.kind]!==undefined && distance<coopMeshDistance) continue;
     const scale=clamp(height/(distance*1.4),.8,5.4);
     if(!isAirContact(target)) {
       const marker=contactColors[target.kind];
@@ -2577,7 +2686,10 @@ function drawMissionWorld(cam,effects=mission?.effects) {
     for(let i=5;i>=0;i--) {
       const point=project(incomingPoint(incoming,aircraft,age-i*.016),cam);
       if(!insideView(point)) continue;
-      rect(point[0]-1,point[1]-1,i===0?3:2,i===0?3:2,i===0?colors.hot:colors.red);
+      const cannon=incoming.weapon==='cannon';
+      if(cannon && i%2===1) continue;
+      rect(point[0]-1,point[1]-1,!cannon&&i===0?3:2,cannon?1:i===0?3:2,
+        i===0?colors.hot:cannon?colors.gold:colors.red);
     }
   }
   for(const effect of effects) {
@@ -2608,7 +2720,7 @@ function drawMissionWorld(cam,effects=mission?.effects) {
         const sample=project(projectilePoint(effect,age-point*.035),cam);
         if(!insideView(sample)) continue;
         const radius=point>3?1:2;
-        rect(sample[0]-radius,sample[1]-radius,radius*2+1,radius*2+1,point>3?colors.haze:selectedProjectile().glow);
+        rect(sample[0]-radius,sample[1]-radius,radius*2+1,radius*2+1,point>3?colors.haze:effect.glow??selectedProjectile().glow);
       }
       const last=project(projectilePoint(effect,age-.05),cam);
       const heading=last?Math.atan2(y-last[1],x-last[0]):-Math.PI/2;
@@ -2616,7 +2728,7 @@ function drawMissionWorld(cam,effects=mission?.effects) {
       const shape=(right,up)=>[x+co*right-si*up,y+si*right+co*up];
       polygon([shape(5,0),shape(1,-2),shape(-4,-2),shape(-6,-4),
         shape(-5,0),shape(-6,4),shape(-4,2),shape(1,2)],colors.hot);
-      line(...shape(-5,0),...shape(-8,0),selectedProjectile().glow);
+      line(...shape(-5,0),...shape(-8,0),effect.glow??selectedProjectile().glow);
     } else {
       const burst=7-effect.life*7, shade=effect.life>.26?colors.cream:colors.ochre;
       for(let i=0;i<8;i++) {
@@ -2629,7 +2741,7 @@ function drawMissionWorld(cam,effects=mission?.effects) {
   }
 }
 function drawAirframeSmoke(s,cam) {
-  if(!mission || mission.integrity>56 || viewBlend<.55) return;
+  if(!mission || mission.integrity>(mission.maxIntegrity??100)*.56 || viewBlend<.55) return;
   for(let index=9;index>=0;index--) {
     const age=(index+wrap(simulationTime*12,1))/10;
     const engine=rotate(s.attitude,[-.76,-.11,-2.1-age*15]);
@@ -2660,7 +2772,7 @@ function drawWeaponFeedback(s,cam) {
 }
 function drawDamageCue() {
   if(!mission) return;
-  const critical=mission.integrity<=32;
+  const critical=mission.integrity<=(mission.maxIntegrity??100)*.32;
   if(mission.damageFlash>0 && Math.floor(simulationTime*15)%2===0) {
     corners(5,5,width-11,height-11,17,colors.red);
     rect(0,0,width,4,pattern(colors.red,5));
@@ -2741,7 +2853,9 @@ function compassRadar(s) {
     const color=contactColors[target.kind];
     if(target===mission.locked) border(mx-3,my-3,7,7,hud);
     if(!isAirContact(target)) border(mx-1,my-1,3,3,color);
-    else if(['drone','interceptor','guardian','rival'].includes(target.kind)) polygon([[mx,my-2],[mx+2,my],[mx,my+2],[mx-2,my]],color);
+    else if(target.kind==='carrier') border(mx-3,my-2,7,5,color);
+    else if(coopFighters[target.kind]!==undefined || ['drone','interceptor','guardian','rival'].includes(target.kind))
+      polygon([[mx,my-2],[mx+2,my],[mx,my+2],[mx-2,my]],color);
     else {
       line(mx-2,my,mx+2,my,color);
       line(mx,my-2,mx,my+2,color);
@@ -2776,11 +2890,12 @@ function selectRadarContact(p) {
 }
 function aircraftStatusHud() {
   if(!mission) return;
-  const compact=width<330, w=compact?119:145, h=touch?64:73;
+  const compact=width<330, w=compact?119:145, h=(touch?64:73)+(mission.special?12:0);
   const right=width-screenInsets[1]-12, bottom=height-screenInsets[2]-(touch?91:12);
   const x=right-w, y=bottom-h;
   const health=mission.integrity;
-  const healthColor=health<=32?colors.red:health<100?colors.gold:hud;
+  const maximum=mission.maxIntegrity??100;
+  const healthColor=health<=maximum*.32?colors.red:health<maximum?colors.gold:hud;
   rect(x,y,w,h,colors.ink);
   corners(x,y,w-1,h-1,7,healthColor);
   type(selectedModel().name,x+7,y+13,10,hud);
@@ -2800,7 +2915,7 @@ function aircraftStatusHud() {
   const column=x+(compact?47:58), valueX=right-7, kit=selectedLoadout();
   const rows=selectedMission?[
     ['导弹',mission.tracers+' + '+mission.missileReserve,mission.launchTime>0?colors.hot:dim],
-    ['热诱弹',mission.decoys+' / '+kit.decoys,mission.incoming?colors.red:dim],
+    ['热诱弹',mission.decoys+' / '+(mission.decoyCap??kit.decoys),mission.incoming?colors.red:dim],
     ['护盾',mission.shield+'%',hud]
   ]:[['机体',health<100?'受损':'完好',healthColor]];
   rows.forEach(([label,value,color],index)=>{
@@ -2808,10 +2923,16 @@ function aircraftStatusHud() {
     type(label,column,lineY,9,hud);
     type(value,valueX,lineY,10,color,'mono','right');
   });
+  if(mission.special) {
+    const lineY=y+(touch?52:61), weapon=duelWeapons[mission.special.index];
+    type(weapon.name,column,lineY,8,hud);
+    const value=mission.specialTime>0?Math.ceil(mission.specialTime)+'秒':mission.specialAmmo+'轮';
+    type(value,valueX,lineY,8,dim,'mono','right');
+  }
   type('血量',column,bottom-10,9,healthColor);
-  type(health+'/100',valueX,bottom-10,10,healthColor,'mono','right');
+  type(health+'/'+maximum,valueX,bottom-10,10,healthColor,'mono','right');
   rect(x+7,bottom-5,w-14,2,colors.slate);
-  rect(x+7,bottom-5,(w-14)*health/100,2,healthColor);
+  rect(x+7,bottom-5,(w-14)*health/maximum,2,healthColor);
 }
 function missionHud(s,cam) {
   if(!mission || !selectedMission) return;
@@ -2877,7 +2998,8 @@ function missionNotice(s) {
     const radians=Math.atan2(dot(offset,[direction[2],0,-direction[0]]),dot(offset,direction));
     const directions=['正前','右前','右侧','右后','后方','左后','左侧','左前'];
     const bearing=directions[wrap(Math.round(radians/(Math.PI/4)),8)];
-    message='来袭 '+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+' 秒 · 规避 '+Math.round((threat.evade||0)*100)+'%';
+    message=(threat.weapon==='cannon'?'机炮点射 ':'来袭 ')+bearing+' · '+Math.max(0,threat.remaining).toFixed(1)+
+      ' 秒 · 规避 '+Math.round((threat.evade||0)*100)+'%';
   }
   const compact=width<330, center=width/2;
   const y=compact?screenInsets[0]+164:height/2-79, w=Math.min(width-12,220);
@@ -2969,6 +3091,7 @@ function touchHud(s) {
   type(chase?'座舱':'追尾',viewX+17,viewY+15,9,hud,'display','center');
   if(!selectedMission || paused) return;
   const buttonLabels=[['pulse','机炮'],['tracer','导弹'],['decoy','热诱'],['cycleTarget','切锁']];
+  if(mission.special) buttonLabels.push(['duelSpecial','特殊']);
   if(mission.config.role==='bomber') buttonLabels.push(['beaconDrop','投送']);
   const buttonWidth=Math.min(37,Math.floor((width-screenInsets[3]-screenInsets[1]-43)/buttonLabels.length));
   const buttonY=height-screenInsets[2]-87;
@@ -3128,11 +3251,25 @@ function resumeCheckpoint() {
 addEventListener('pagehide',saveCheckpoint);
 
 // LAN transport and room. The browser exchanges gathered candidates through the two copyable codes.
-const lanProtocol=1;
-const lanCodePrefix='PATROL1.';
-const lanStages={pve:[4,1],pvp:[1]};
+const lanProtocol=2;
+const lanCodePrefix='PATROL2.';
+const duelWeapons=[
+  {name:'4AAM',shots:4,damage:12,ammo:6,cooldown:7,range:400,lock:.72,description:'四发齐射，冷却较短'},
+  {name:'8AAM',shots:8,damage:9,ammo:3,cooldown:12,range:460,lock:.82,description:'八发齐射，备弹较少'},
+  {name:'远程单发',shots:1,damage:58,ammo:4,cooldown:10,range:680,lock:.94,description:'射程更远，锁定要求更高'}
+];
+const duelParts=[
+  {name:'复合装甲',description:'机体最大耐久增加 30',hull:30},
+  {name:'速装挂架',description:'普通弹补装加快 25%',reload:.75},
+  {name:'高效冷却',description:'特殊弹冷却缩短 25%',cooldown:.75},
+  {name:'干扰吊舱',description:'出击时额外携带 2 枚热诱弹',decoys:2}
+];
+const defaultDuelKit=[0,0];
+const validDuelKit=kit=>Array.isArray(kit)&&kit.length===2&&kit.every(Number.isInteger)&&
+  Boolean(duelWeapons[kit[0]]&&duelParts[kit[1]]);
+const lanStages={pve:[9,1,4],pvp:[1]};
 const lan={
-  role:null, phase:'idle', connected:false, mode:'pve', stage:4, localAircraft:0, remoteAircraft:0,
+  role:null, phase:'idle', connected:false, mode:'pve', stage:lanStages.pve[0], localAircraft:0, remoteAircraft:0,
   localReady:false, remoteReady:false, revision:0, round:0, status:'',
   session:'', invite:'', response:'', peer:null, control:null, snapshots:null, dialog:null,
   helloSent:false, helloReceived:false, timer:0, disconnectTimer:0, epoch:0,
@@ -3164,6 +3301,8 @@ function closeLanRoom() {
 }
 function openLanRoom(aircraftIndex=0) {
   closeLanRoom();
+  lan.localKit=defaultDuelKit.slice();
+  lan.remoteKit=defaultDuelKit.slice();
   lan.localAircraft=lanDefaultAircraft(aircraftIndex);
   lan.remoteAircraft=lanDefaultAircraft(0);
   if(typeof RTCPeerConnection!=='function') lan.status='此浏览器未提供局域网连接功能';
@@ -3367,10 +3506,10 @@ async function acceptLanResponse(value) {
 }
 function sendLanSetup() {
   sendLanPacket(lan.control,{kind:'setup',revision:lan.revision,mode:lan.mode,stage:lan.stage,
-    aircraft:lan.localAircraft,ready:lan.localReady});
+    aircraft:lan.localAircraft,kit:lan.localKit,ready:lan.localReady});
 }
 function sendLanChoice() {
-  sendLanPacket(lan.control,{kind:'choice',revision:lan.revision,aircraft:lan.localAircraft,ready:lan.localReady});
+  sendLanPacket(lan.control,{kind:'choice',revision:lan.revision,aircraft:lan.localAircraft,kit:lan.localKit,ready:lan.localReady});
 }
 function applyLanPacket(packet) {
   if(packet.kind==='hello') {
@@ -3384,24 +3523,27 @@ function applyLanPacket(packet) {
   if(!lan.helloReceived) return;
   if(packet.kind==='leave') {failLanPeer('对方已离开，连接结束');return;}
   if(packet.kind==='setup'&&lan.role==='guest'&&lan.phase!=='playing'&&
-    Number.isSafeInteger(packet.revision)&&packet.revision>=lan.revision&&lanStageValid(packet.mode,packet.stage)&&lanModelValid(packet.aircraft)) {
+    Number.isSafeInteger(packet.revision)&&packet.revision>=lan.revision&&lanStageValid(packet.mode,packet.stage)&&lanModelValid(packet.aircraft)&&validDuelKit(packet.kit)) {
     const changed=packet.revision!==lan.revision;
     Object.assign(lan,{revision:packet.revision,mode:packet.mode,stage:packet.stage,
-      remoteAircraft:packet.aircraft,remoteReady:packet.ready===true});
+      remoteAircraft:packet.aircraft,remoteKit:packet.kit,remoteReady:packet.ready===true});
     if(changed) {lan.localReady=false;sendLanChoice();}
   }
   if(packet.kind==='choice'&&lan.role==='host'&&lan.phase!=='playing'&&
-    packet.revision===lan.revision&&lanModelValid(packet.aircraft)) {
+    packet.revision===lan.revision&&lanModelValid(packet.aircraft)&&validDuelKit(packet.kit)) {
     lan.remoteAircraft=packet.aircraft;
+    lan.remoteKit=packet.kit;
     lan.remoteReady=packet.ready===true;
   }
   if(!lan.connected) return;
   if(packet.kind==='start'&&lan.role==='guest'&&lan.phase==='room'&&
     Number.isSafeInteger(packet.round)&&packet.round>lan.round&&packet.revision===lan.revision&&
-    lanModelValid(packet.hostAircraft)&&lanModelValid(packet.guestAircraft)) {
+    lanModelValid(packet.hostAircraft)&&lanModelValid(packet.guestAircraft)&&validDuelKit(packet.hostKit)&&validDuelKit(packet.guestKit)) {
     // The host's start packet resolves any simultaneous cancellation or aircraft change.
     lan.localAircraft=packet.guestAircraft;
     lan.remoteAircraft=packet.hostAircraft;
+    lan.localKit=packet.guestKit;
+    lan.remoteKit=packet.hostKit;
     beginLanRoomMatch(packet.round);
   }
   if(packet.kind==='game'&&lan.phase==='playing'&&packet.round===lan.round&&packet.data&&typeof packet.data==='object')
@@ -3432,13 +3574,14 @@ function beginLanRoomMatch(round) {
   const isHost=role==='host';
   Object.assign(lan,{phase:'playing',round});
   lan.onStart?.({role,mode,stage,localAircraft,remoteAircraft,mission:stage,
+    localKit:lan.localKit,remoteKit:lan.remoteKit,
     hostModel:isHost?localAircraft:remoteAircraft,guestModel:isHost?remoteAircraft:localAircraft});
 }
 function startLanRoomMatch() {
   if(!lan.connected||lan.role!=='host'||lan.phase!=='room'||!lan.localReady||!lan.remoteReady) return;
   const round=lan.round+1;
   if(sendLanPacket(lan.control,{kind:'start',round,revision:lan.revision,
-    hostAircraft:lan.localAircraft,guestAircraft:lan.remoteAircraft})) beginLanRoomMatch(round);
+    hostAircraft:lan.localAircraft,guestAircraft:lan.remoteAircraft,hostKit:lan.localKit,guestKit:lan.remoteKit})) beginLanRoomMatch(round);
 }
 function resetLanMatchReady() {
   Object.assign(lan,{phase:'room',localReady:false,remoteReady:false});
@@ -3760,6 +3903,44 @@ function showOnlineRoomCode(invite=false) {
   if(invite) field.select();
 }
 
+function showDuelLoadout() {
+  if(lan.mode!=='pvp'||lan.phase!=='room') return;
+  if(lan.localReady) toggleLanReady();
+  lan.dialog?.close();
+  const dialog=document.createElement('dialog'), form=document.createElement('form');
+  Object.assign(dialog.style,{width:'min(390px, 92vw)',background:colors.ink,color:colors.cream,
+    border:'2px solid '+colors.haze,padding:'16px',font:'14px '+chineseFont});
+  const heading=document.createElement('h2'), summary=document.createElement('p');
+  heading.textContent='对抗武装';
+  summary.textContent='普通导弹随所选机型配备。再选一种特殊弹和一个配件。';
+  form.append(heading,summary);
+  const selectors=[['特殊弹',duelWeapons],['机体配件',duelParts]].map(([title,items],slot)=>{
+    const label=document.createElement('label'), select=document.createElement('select');
+    label.textContent=title;
+    Object.assign(select.style,{display:'block',width:'100%',margin:'6px 0 16px',padding:'8px',
+      color:colors.cream,background:colors.black,border:'1px solid '+colors.haze});
+    items.forEach((item,index)=>select.add(new Option(item.name+' · '+item.description,String(index))));
+    select.value=String(lan.localKit[slot]);
+    label.append(select);form.append(label);
+    return select;
+  });
+  const cancel=document.createElement('button'), confirm=document.createElement('button');
+  cancel.type='button';cancel.textContent='取消';confirm.textContent='确认配置';
+  cancel.addEventListener('click',()=>dialog.close());
+  form.addEventListener('submit',event=>{
+    event.preventDefault();
+    const kit=selectors.map(select=>Number(select.value));
+    if(lan.connected&&lan.mode==='pvp'&&lan.phase==='room'&&validDuelKit(kit)&&kit.some((value,i)=>value!==lan.localKit[i])) {
+      lan.localKit=kit;lan.localReady=false;
+      if(lan.role==='host') sendLanSetup();else sendLanChoice();
+    }
+    dialog.close();
+  });
+  lan.dialog=dialog;
+  dialog.addEventListener('keydown',event=>event.stopPropagation());
+  dialog.addEventListener('close',()=>{if(lan.dialog===dialog) lan.dialog=null;dialog.remove();});
+  form.append(cancel,confirm);dialog.append(form);document.body.append(dialog);dialog.showModal();
+}
 function drawLanRoom() {
   const center=width/2, panelWidth=Math.min(316,width-24), x=Math.round(center-panelWidth/2);
   const top=Math.max(12,Math.round(height/2-139)), buttonX=x+13, innerWidth=panelWidth-26;
@@ -3783,6 +3964,8 @@ function drawLanRoom() {
     } else type(lan.mode==='pve'?'合作任务':'一对一对抗',center,top+70,11,colors.cream,'mono','center');
     if(lan.role==='host'&&lanStages[lan.mode].length>1) {
       canvasButton('lanMap',missions[lan.stage].name+'  ·  换场地',buttonX,top+84,innerWidth,22,false,10);
+    } else if(lan.mode==='pvp') {
+      canvasButton('duelLoadout',duelWeapons[lan.localKit[0]].name+' · 配装',buttonX,top+84,innerWidth,22,false,10);
     } else type(missions[lan.stage].name,center,top+101,11,colors.gold,'mono','center');
     type('本机  '+aircraftModels[lan.localAircraft].name+' · '+(lan.localReady?'已准备':'未准备'),
       buttonX,top+123,thin?9:10,colors.cream);
@@ -3850,6 +4033,7 @@ function handleLanRoomPointer(point) {
   else if(hit('lanRelay')) showLanRelaySettings();
   else if(hit('lanPve')) setLanMode('pve');
   else if(hit('lanPvp')) setLanMode('pvp');
+  else if(hit('duelLoadout')) showDuelLoadout();
   else if(hit('lanMap')) {
     const choices=lanStages[lan.mode];
     setLanRoomRules(lan.mode,choices[(choices.indexOf(lan.stage)+1)%choices.length]);
@@ -3864,7 +4048,7 @@ function handleLanRoomPointer(point) {
 // Two-player arcade sorties. The host owns the world and both aircraft.
 let lanMatch=null;
 const lanFrameInterval=.05, lanMatchLimit=150;
-const lanInputActions=new Set(['pulse','tracer','decoy','cycle','select']);
+const lanInputActions=new Set(['pulse','tracer','special','decoy','cycle','select']);
 const neutralLanInput=()=>({axes:[0,0,0],power:0,throttle:null,pulse:false,tracer:false});
 const lanInputBlocked=()=>Boolean(lanMatch&&(lanMatch.menu||lanMatch.result||lanMatch.disconnected));
 function localLanInput() {
@@ -3909,14 +4093,22 @@ function lanSpawnSeat(state,mode,role) {
   state.agl=state.position[1]-Math.max(0,solidHeight(state.position[0],state.position[2]));
   return state;
 }
-function lanSetRival(seat,opponent,health=100) {
+function configureDuelSeat(seat,kit) {
+  const [index,partIndex]=validDuelKit(kit)?kit:defaultDuelKit;
+  const part=duelParts[partIndex];
+  const maxIntegrity=240+(part.hull??0);
+  Object.assign(seat,{duelPart:part,special:{index},specialAmmo:duelWeapons[index].ammo,specialTime:0,
+    maxIntegrity,integrity:maxIntegrity,decoyCap:seat.decoys+(part.decoys??0)});
+  seat.decoys=seat.decoyCap;
+}
+function lanSetRival(seat,opponent,health) {
   const target=missionTarget('rival',opponent.position,health,0);
-  target.maxHealth=100;
+  target.maxHealth=health;
   seat.targets=[target];seat.locked=target;seat.charge=0;
 }
 function startLanMatch(config) {
   if(!ready||flying || !['host','guest'].includes(config.role) ||
-    !['pve','pvp'].includes(config.mode) || ![1,4].includes(config.stage) ||
+    !lanStageValid(config.mode,config.stage) ||
     !aircraftModels[config.localAircraft] || !aircraftModels[config.remoteAircraft]) return;
   selectedMission=config.mode==='pvp'?1:config.stage;
   activeEnvironment=selectedMission;
@@ -3936,11 +4128,13 @@ function startLanMatch(config) {
     resetMission();
   });
   if(match.mode==='pvp') {
+    configureDuelSeat(mission,config.localKit);
+    configureDuelSeat(match.peerMission,config.remoteKit);
     match.duelDecoys=[mission.decoys,match.peerMission.decoys];
     const duel={...mission.config,name:'湖区对决',skill:0};
     mission.config=match.peerMission.config=duel;
-    lanSetRival(mission,match.peerFlight);
-    lanSetRival(match.peerMission,aircraft);
+    lanSetRival(mission,match.peerFlight,match.peerMission.integrity);
+    lanSetRival(match.peerMission,aircraft,mission.integrity);
   } else {
     match.peerMission.targets=mission.targets;
     match.peerMission.campaign=mission.campaign;
@@ -4010,6 +4204,7 @@ function updateLanPeer(dt,match) {
     for(const action of match.peerActions.splice(0)) {
       if(action.action==='pulse') firePulse();
       if(action.action==='tracer') fireTracer();
+      if(action.action==='special') fireDuelSpecial();
       if(action.action==='decoy') dropDecoy();
       if(action.action==='cycle') cycleTarget(true);
       if(action.action==='select'&&mission.targets[action.index]?.health)
@@ -4031,6 +4226,8 @@ function syncLanDuelThreat(seat,attacker,match,index) {
   if(effect&&deflected) {
     // A visible countermeasure removes the corresponding arcade projectile.
     effect.deflected=true;
+    if(effect.volley!==undefined) for(const projectile of attacker.effects)
+      if(projectile.volley===effect.volley) projectile.deflected=true;
     seat.incoming=null;
   } else if(effect&&!deflected) {
     if(!seat.incoming&&index===0) playCue('incoming');
@@ -4050,6 +4247,7 @@ function lanSeatFrame(seat) {
     muzzleTime,launchTime,damageFlash,damageReason,recoveryTime,charge,lockLostTime,notice,noticeTime,incoming}=seat;
   return {shield,integrity,zones,tracers,decoys,missileReserve,missileReload,tracerTime,
     muzzleTime,launchTime,damageFlash,damageReason,recoveryTime,charge,lockLostTime,notice,noticeTime,incoming,
+    maxIntegrity:seat.maxIntegrity,specialAmmo:seat.specialAmmo,specialTime:seat.specialTime,decoyCap:seat.decoyCap,
     lock:seat.targets.indexOf(seat.locked),effects:lanEffectFrames(seat)};
 }
 function captureLanFrame(match) {
@@ -4081,7 +4279,8 @@ function stepLanMatch(dt) {
     syncLanDuelThreat(match.peerMission,mission,match,1);
     const home=mission.integrity, away=match.peerMission.integrity;
     if(!home||!away||match.clock>=lanMatchLimit) {
-      const winner=home===away?'draw':home>away?'host':'guest';
+      const margin=home*match.peerMission.maxIntegrity-away*mission.maxIntegrity;
+      const winner=margin===0?'draw':margin>0?'host':'guest';
       finishLanMatch(match,winner);
     }
   }
@@ -4191,6 +4390,11 @@ function drawLanHud(s,cam) {
   const size=width<295?8:9, span=width<295?86:126;
   rect(x-span/2,y-10,span,13,colors.ink);
   type(tag,x,y,size,colors.cream,'mono','center');
+  if(match.mode==='pvp'&&!touch) type('K 普通弹 · X 特殊弹',x,y+12,8,colors.gold,'mono','center');
+  if(match.mode==='pve'&&mission.config.coop&&mission.campaign) {
+    const wave=mission.config.waves[mission.campaign.wave];
+    type(wave.line,x,y+12,8,colors.gold,'mono','center');
+  }
   if(match.mode!=='pve'||match.detached||!match.peerFlight) return;
   const color=colors.haze;
   const peer=match.peerFlight.position;
@@ -4378,7 +4582,7 @@ lan.onExit=exitLanEntry;
 function skipTutorial() {tutorialSkipped=true;lesson=lessons.length;}
 const flightKeys=new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight','ControlLeft','ControlRight']);
 const actionKeys=new Set(['Enter','Escape','KeyC','KeyR','KeyP','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Backspace',
-  'KeyJ','KeyK','KeyL','KeyT','KeyU','KeyB','KeyN']);
+  'KeyJ','KeyK','KeyL','KeyT','KeyU','KeyB','KeyN','KeyX']);
 function handleEntryKey(code) {
   if(code==='Enter') {
     if(entryScreen==='hangar') launch();
@@ -4419,6 +4623,7 @@ addEventListener('keydown',event=>{
   if(flying&&!paused && event.code==='KeyL' && !lanInputAction('decoy')) dropDecoy();
   if(flying&&!paused && event.code==='KeyJ' && !lanInputAction('pulse')) firePulse();
   if(flying&&!paused && event.code==='KeyK' && !lanInputAction('tracer')) fireTracer();
+  if(flying&&!paused && event.code==='KeyX' && mission?.special && !lanInputAction('special')) fireDuelSpecial();
   if(flying&&!paused && event.code==='KeyB') deliverBeacon();
 });
 addEventListener('keyup',event=>keys.delete(event.code));
@@ -4486,6 +4691,7 @@ glass.addEventListener('pointerdown',event=>{
   if(selectRadarContact(p)) return;
   if(inside(p,hitBoxes.cycleTarget)) {if(!lanInputAction('cycle')) cycleTarget(true);return;}
   if(inside(p,hitBoxes.decoy)) {if(!lanInputAction('decoy')) dropDecoy();return;}
+  if(inside(p,hitBoxes.duelSpecial)) {if(!lanInputAction('special')) fireDuelSpecial();return;}
   if(inside(p,hitBoxes.pulse) || inside(p,hitBoxes.tracer)) {
     const action=inside(p,hitBoxes.pulse)?'pulse':'tracer';
     combatPointers.set(action,event.pointerId);
@@ -4609,6 +4815,7 @@ function draw(now) {
   const canopyCoverage=viewBlend<.24?16:viewBlend<.48?11:viewBlend<.76?5:0;
   renderJet(cam,s,simulationTime,viewBlend>.35?clamp((viewBlend-.35)*2.6,0,1):0);
   renderWingman(cam,simulationTime,alpha);
+  renderCoopAircraft(cam);
   if(lanMatch) renderLanJet(cam);
   drawAirframeSmoke(s,cam);
   drawSpray(cam);

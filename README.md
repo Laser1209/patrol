@@ -28,7 +28,7 @@
 - **暮湾航线** — 从引航台失联开始，穿过五章逐步展开的任务。雷达上有巡航与截击无人机、移动中继车和干扰机。两章允许驾驶大型机，投送引航信标，接通撤离航线。
 - **机库** — 出击前从 13 款机体中挑选。苏-27、米格-21、F-16、歼-20、B-52、图-95、轰-6 等机型各有独立外形与飞行手感。可以拖动查看机体，也可以切到顶视、侧视和正视。
 - **电脑僚机** — 机库可开关僚机。在空中指挥它保持编队、协同交战或返队。驾驶大型机出击时，僚机会默认护航，雷达上可以随时找到它。
-- **双人局域网** — 和朋友各自选机，在「暮光失联」或「湖面试航」并肩完成任务，也可以到南岸打一场 150 秒的空中对决。
+- **双人联机** — 在联合闯关里迎战五波敌机，最后挑战空天母舰。也可以到南岸打一场 150 秒的空中对决，搭配特殊弹和机体配件。
 
 | 暮湾湖区 | 歼-11 机库预览 |
 | :---: | :---: |
@@ -70,6 +70,9 @@
 
 合作模式共享任务进度和积分，队友掉线时可由电脑僚机接替。对抗模式是南岸空域的 1 对 1。联机菜单只在本机打开，联机对局也不会覆盖单机存档。
 
+- **联合闯关**依次迎战苏系、美系、混合编队、电子战机与苏系护航、全系混编，最后挑战空天母舰。原有演习仍可在房间中切换。
+- **对抗武装**可在 PvP 准备前选择 4AAM、8AAM 或远程单发弹，再装一个配件。`K` 发射普通导弹，`X` 发射特殊弹，触屏可点「特殊」。限时进度按双方剩余耐久的比例结算。
+
 **同一个热点还是连不上？** 两台设备能上网的话，可以改用 **邀请好友**，游戏会自动尝试备用线路。只有本地网络时，请使用允许设备互通的 Wi‑Fi。
 
 <p align="center">
@@ -84,7 +87,7 @@
 
 ### Two-player multiplayer
 
-Play either of two co-op sorties or fly a 150-second one-on-one duel over the south shore. Open [PATROL online](https://patrol.etta.top/), choose **邀请好友** (Invite a Friend) and share the room link. Your friend can open the link or enter the ten-character room code. The game tries a direct connection first and automatically tries a relay if needed.
+Clear five enemy waves and take on an aerospace carrier in the co-op gauntlet, or fly a 150-second duel over the south shore. In PvP, choose a special weapon and one upgrade before takeoff. Press `K` for standard missiles or `X` for special weapons. Open [PATROL online](https://patrol.etta.top/), choose **邀请好友** (Invite a Friend) and share the room link. Your friend can open the link or enter the ten-character room code. The game tries a direct connection first and automatically tries a relay if needed.
 
 For offline LAN play, both devices should open the same game version on the same local network.
 
